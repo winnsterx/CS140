@@ -6,6 +6,7 @@
 #include "threads/interrupt.h"
 #include "threads/thread.h"
 #include "threads/vaddr.h"
+#include "userprog/process.h"
 
 static void syscall_handler (struct intr_frame *);
 
@@ -111,8 +112,14 @@ validate_name (const char *name)
 static void
 syscall_handler (struct intr_frame *f UNUSED) 
 {
+
+  // hex_dump (f->esp, f->esp, 100, true);
   /* Assuming a proper syscall, there should be at least 4
      words on the caller stack */
+
+  if (!validate_range (f->esp, 4 * sizeof (int)))
+    thread_exit ();
+
   enum syscall_no syscall_no = *(enum syscall_no *) f->esp;
   void *arg1 = f->esp + sizeof (int);
   void *arg2 = f->esp + 2 * sizeof (int);
@@ -173,7 +180,9 @@ halt (void)
 
 NO_RETURN static void
 exit (int status)
-{
+{  
+  thread_current ()->wait->exit_status = status;
+  thread_exit ();
 }
 
 static tid_t
@@ -188,6 +197,7 @@ exec (const char *name)
 static int
 wait (tid_t pid)
 {
+  return process_wait (pid);
 }
 
 static bool

@@ -283,7 +283,9 @@ thread_exit (void)
   ASSERT (!intr_context ());
 
 #ifdef USERPROG
-  process_exit ();
+  /* Indicates that this thread is a process. */
+  if (thread_current ()->wait)
+    process_exit ();
 #endif
 
   /* Remove thread from all threads list, set our status to dying,

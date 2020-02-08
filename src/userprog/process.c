@@ -54,8 +54,9 @@ process_execute (const char *command)
   strlcpy (file_name, command, sizeof_name);
   char *name_end = strchr (file_name, ' ');
   if (name_end != NULL)
+  {
     *name_end = '\0';
-
+   }
   // WHAT IF MALLOC FAILS
   struct wait_struct *wait = (struct wait_struct *) 
                              malloc (sizeof (struct wait_struct));
@@ -70,11 +71,31 @@ process_execute (const char *command)
   process_args.command = cmd_copy;
   process_args.wait = wait;
   sema_init (&process_args.process_loaded_sem, 0);
-  
+
   /* Create a new thread to execute FILE_NAME. */
+  lock_acquire (&wait->status_lock);
   tid = thread_create (file_name, PRI_DEFAULT, start_process, &process_args);
   if (tid == TID_ERROR)
-    palloc_free_page (cmd_copy); 
+    {
+      palloc_free_page (cmd_copy);
+      free (wait);
+      return TID_ERROR;
+    }
+  
+  sema_down (&process_args.process_loaded_sem); 
+  if (!process_args.success)
+    {
+      /* Trick child into deallocaitng its own wait struct */
+      wait->parent_dead = true;
+      tid = TID_ERROR;
+    }
+  else
+    {
+      list_push_back (&thread_current ()->child_list, &wait->elem);
+    }  
+ 
+  lock_release (&wait->status_lock);
+  
   return tid;
 }
 
@@ -83,9 +104,7 @@ process_execute (const char *command)
 static void
 start_process (void *process_args)
 {
-  // printf ("oh no");
   struct process_args *args = (struct process_args *) process_args;
-  printf ("%s\n", args->command);
   struct intr_frame if_;
   bool success;
 
@@ -95,7 +114,9 @@ start_process (void *process_args)
   if_.cs = SEL_UCSEG;
   if_.eflags = FLAG_IF | FLAG_MBS;
   success = load (args->command, &if_.eip, &if_.esp);
+  thread_current ()->wait = args->wait;
   args->success = success;
+  args->wait->tid = thread_current ()->tid;
   palloc_free_page (args->command);
   
   /* Must be done with args before PROCESS_EXECUTE may continue tp
@@ -131,13 +152,17 @@ process_wait (tid_t child_tid UNUSED)
   struct thread *cur = thread_current ();
   struct list_elem *e;
   struct wait_struct *child_wait = NULL;
+
   for (e = list_begin (&cur->child_list); e != list_end (&cur->child_list);
        e = list_next (e))
     {
       struct wait_struct *child_wait_entry = list_entry (e,
                          struct wait_struct, elem);
       if (child_wait_entry->tid == child_tid)
-        child_wait = child_wait_entry;
+        {
+          child_wait = child_wait_entry;
+          break;
+        }
     }
   
   if (child_wait == NULL)
@@ -579,8 +604,8 @@ place_arguments (const char *command, void *kpage, void **esp)
   argv_buf[argc] = NULL;
 
   /* Word-align memory before pushing further. */
-  off_esp = (void *) ROUND_DOWN ((uintptr_t) off_esp, sizeof (int));
-  *esp = (void *) ROUND_DOWN ((uintptr_t) *esp, sizeof (int));
+  off_esp = (void *) ROUND_DOWN ((uintptr_t) off_esp, 4);
+  *esp = (void *) ROUND_DOWN ((uintptr_t) *esp, 4);
 
   /* Copy argv array into its proper location, zero its source,
      copy argv pointer and argc */
