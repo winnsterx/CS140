@@ -134,10 +134,10 @@ fd_gap (const struct list_elem *cur, void *aux)
 }
 
 static bool 
-fd_matches (const struct list_elem *cur, void *aux)
+fd_leq (const struct list_elem *cur, void *aux)
 {
   int fd = (int) aux;
-  return elem_to_fd (cur)->fd == fd;
+   return elem_to_fd (cur)->fd >= fd;
 }
 
 static void
@@ -147,10 +147,24 @@ free_fd_struct (struct fd_struct *fd_struct)
     lock_acquire (&thread_filesys_lock);
     file_close (fd_struct->file);
     lock_release (&thread_filesys_lock);
-    printf("Will free: %p\n", (uint8_t *) fd_struct);
-    free ((uint8_t *) fd_struct);
-    printf ("struct freed\n");
-  }
+    if (!validate_range (fd_struct, sizeof fd_struct))
+      printf ("WHAT THE HELL\n");
+    free (fd_struct);
+   }
+
+static struct thread_struct *
+find_fd_struct (int fd)
+{  
+  struct thread *cur = thread_current ();
+  struct list_elem *e = list_search_first (&cur->fd_list,
+                                           fd_leq, (void *) fd);
+
+  if (e ==list_end (&cur->fd_list))
+  if (e == list_end (&cur->fd_list) || elem_to_fd (e)->fd != fd)
+    return NULL;
+
+  return elem_to_fd (e);
+}
 
 static void
 syscall_handler (struct intr_frame *f UNUSED) 
@@ -254,11 +268,29 @@ wait (tid_t pid)
 static bool
 create (const char *name, unsigned initial_size)
 {
+  if (!validate_name (name))
+    thread_exit ();
+
+  bool success;
+  lock_acquire (&thread_filesys_lock);
+  success = filesys_create (name, initial_size);
+  lock_release (&thread_filesys_lock);
+
+  return success;
 }
 
 static bool
 remove (const char *name)
 {
+  if (!validate_name (name))
+    thread_exit ();
+
+  bool success;
+  lock_acquire (&thread_filesys_lock);
+  success = filesys_remove ();
+  lock_release (&thread_filesys_lock);
+ 
+  return success;
 }
 
 static int
@@ -272,10 +304,10 @@ open (const char *name)
   lock_release (&thread_filesys_lock);
 
   if (file == NULL)
-    {
-      printf ("%s\n", name);
-      return -1;
-    }
+   {
+    printf ("open failed\n");
+    return -1;
+  }
 
   struct list *fd_list = &thread_current ()->fd_list;
   void *head = list_head (fd_list);
@@ -284,7 +316,6 @@ open (const char *name)
   // WHAT IF MALLOC FAILS
 
   struct fd_struct *fd_struct = malloc (sizeof (struct fd_struct));
-  printf ("Allocated: %p\n", fd_struct);
   int fd;
 
   if (list_prev (e) == head)
@@ -294,57 +325,121 @@ open (const char *name)
 
   fd_struct->fd = fd;
   fd_struct->file = file;
+  printf ("POINTER: %p\n", file);
   list_insert (e, &fd_struct->elem);
 
+  printf ("FUCK\n");
   return fd;
 }
 
 static int
 filesize (int fd)
 {
+  struct fd_struct *fd_struct = find_fd_struct (fd);
+  if (fd_struct == NULL)
+    return -1;
+  
+  lock_acquire (&thread_filesys_lock);
+  int length = file_length (fd_struct->file);
+  lock_release (&thread_filesys_lock);
+
+  return file_length (fd_struct->file);
 }
 
 static int
 read (int fd, void *buffer, unsigned length)
 {
+  if (!validate_range (buffer, length))
+    thread_exit ();
+
+  if (fd == STDOUT_FILENO)
+    return -1;
+
+  if (fd == STDIN_FILENO)
+    {
+      int i = 0;
+      for (; i < length; i++)
+        {
+          ((uint8_t *) buffer)[i] = input_getc ();
+        }
+      
+      return i;  
+    }
+  
+  struct fd_struct *fd_struct = find_fd_struct (fd);
+  if (fd_struct == NULL)
+    return -1;
+  
+  int result;
+  lock_acquire (&thread_filesys_lock);
+  printf ("start reading: %p\n", fd_struct->file);
+  result = file_read (fd_struct->file, buffer, length);
+  printf ("reading done\n");
+  lock_release (&thread_filesys_lock);
+  
+  return result;
 }
 
 static int
 write (int fd, const void *buffer, unsigned length)
 {
-  if (fd == STDIN_FILENO || !validate_range (buffer, length))
+  if (!validate_range (buffer, length))
+    thread_exit ();
+
+  if (fd == STDIN_FILENO)
     return -1;
 
- /* INDENT STYLE? */ 
- if (fd == STDOUT_FILENO)
-    {
-      putbuf (buffer, length);
-      return length;
-    }
-  else
-    {
-    }
+  if (fd == STDOUT_FILENO)
+   {
+     putbuf (buffer, length);
+     return length;
+   }
+
+  struct fd_struct *fd_struct = find_fd_struct (fd);
+  if (fd_struct == NULL)
+    return -1;
+
+  int result;
+  lock_acquire (&thread_filesys_lock);
+  result = file_write (fd_struct->file, buffer, length);
+  lock_release (&thread_filesys_lock);
+
+  return result;
 }
 
 static void
 seek (int fd, unsigned position)
 {
+  struct fd_struct *fd_struct = find_fd_struct (fd);
+  if (fd_struct == NULL)
+    return;
+
+  lock_acquire (&thread_filesys_lock);
+  file_seek (fd, position);
+  lock_release (&thread_filesys_lock);
 }
 
 static unsigned
 tell (int fd)
 {
+  struct fd_struct *fd_struct = find_fd_struct (fd);
+  if (fd_struct == NULL)
+    thread_exit ();
+  
+  unsigned pos;
+  lock_acquire (&thread_filesys_lock);
+  file_tell (fd_struct->file);
+  lock_release (&thread_filesys_lock);
+
+  return pos;
 }
 
 static void
 close (int fd)
 {
-  struct thread *cur = thread_current ();
-  struct list_elem *e = list_search_first (&cur->fd_list,
-                                           fd_matches, (void *) fd);
+  struct fd_struct *fd_struct = find_fd_struct (fd);
+  if (fd_struct == NULL)
+    thread_exit (); //should we be this harsh?
 
-  if (e == list_end (&cur->fd_list))
-    thread_exit ();
-
-  free_fd_struct (elem_to_fd (e));  
+  free_fd_struct (fd_struct);  
 }

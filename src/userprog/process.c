@@ -58,8 +58,8 @@ process_execute (const char *command)
     *name_end = '\0';
    }
   // WHAT IF MALLOC FAILS
-  struct wait_struct *wait = (struct wait_struct *) 
-                             malloc (sizeof (struct wait_struct));
+  struct wait_struct *wait = palloc_get_page (0);/* (struct wait_struct *) 
+                             malloc (sizeof (struct wait_struct)); */
   sema_init (&wait->wait_sem, 0);
   lock_init (&wait->status_lock);
   wait->exit_status = -1; /* Changed on a proper exit */
