@@ -14,9 +14,18 @@
 #include "threads/flags.h"
 #include "threads/init.h"
 #include "threads/interrupt.h"
+#include "threads/malloc.h"
 #include "threads/palloc.h"
 #include "threads/thread.h"
 #include "threads/vaddr.h"
+
+struct process_args
+{
+  char *command;
+  struct wait_struct *wait;
+  struct semaphore process_loaded_sem;
+  bool success;
+};
 
 static thread_func start_process NO_RETURN;
 static bool load (const char *cmdline, void (**eip) (void), void **esp);
@@ -47,8 +56,23 @@ process_execute (const char *command)
   if (name_end != NULL)
     *name_end = '\0';
 
+  // WHAT IF MALLOC FAILS
+  struct wait_struct *wait = (struct wait_struct *) 
+                             malloc (sizeof (struct wait_struct));
+  sema_init (&wait->wait_sem, 0);
+  lock_init (&wait->status_lock);
+  wait->exit_status = -1; /* Changed on a proper exit */
+  wait->parent_dead = false;
+  wait->child_dead = false;
+
+  /* Get arguments to START_PROCESS */
+  struct process_args process_args;
+  process_args.command = cmd_copy;
+  process_args.wait = wait;
+  sema_init (&process_args.process_loaded_sem, 0);
+  
   /* Create a new thread to execute FILE_NAME. */
-  tid = thread_create (file_name, PRI_DEFAULT, start_process, cmd_copy);
+  tid = thread_create (file_name, PRI_DEFAULT, start_process, &process_args);
   if (tid == TID_ERROR)
     palloc_free_page (cmd_copy); 
   return tid;
@@ -57,10 +81,11 @@ process_execute (const char *command)
 /* A thread function that loads a user process and starts it
    running. */
 static void
-start_process (void *file_name_)
+start_process (void *process_args)
 {
-  
-  char *file_name = file_name_;
+  // printf ("oh no");
+  struct process_args *args = (struct process_args *) process_args;
+  printf ("%s\n", args->command);
   struct intr_frame if_;
   bool success;
 
@@ -69,10 +94,15 @@ start_process (void *file_name_)
   if_.gs = if_.fs = if_.es = if_.ds = if_.ss = SEL_UDSEG;
   if_.cs = SEL_UCSEG;
   if_.eflags = FLAG_IF | FLAG_MBS;
-  success = load (file_name, &if_.eip, &if_.esp);
-
+  success = load (args->command, &if_.eip, &if_.esp);
+  args->success = success;
+  palloc_free_page (args->command);
+  
+  /* Must be done with args before PROCESS_EXECUTE may continue tp
+     prevent a dangling reference */
+  sema_up (&args->process_loaded_sem);
+  
   /* If load failed, quit. */
-  palloc_free_page (file_name);
   if (!success) 
     thread_exit ();
 
@@ -98,10 +128,31 @@ start_process (void *file_name_)
 int
 process_wait (tid_t child_tid UNUSED) 
 {
-  for (;;)
-   {
-   }
-  return -1;
+  struct thread *cur = thread_current ();
+  struct list_elem *e;
+  struct wait_struct *child_wait = NULL;
+  for (e = list_begin (&cur->child_list); e != list_end (&cur->child_list);
+       e = list_next (e))
+    {
+      struct wait_struct *child_wait_entry = list_entry (e,
+                         struct wait_struct, elem);
+      if (child_wait_entry->tid == child_tid)
+        child_wait = child_wait_entry;
+    }
+  
+  if (child_wait == NULL)
+    return -1;
+  
+  sema_down (&child_wait->wait_sem);
+  
+  // MAYBE CHANGE THIS SO CHILD NEVR FREES SELF
+  lock_acquire (&child_wait->status_lock);
+  lock_release (&child_wait->status_lock);
+  int exit_status = child_wait->exit_status;
+  list_remove (&child_wait->elem);
+  free (child_wait);
+  
+  return exit_status;
 }
 
 /* Free the current process's resources. */
@@ -126,6 +177,40 @@ process_exit (void)
       cur->pagedir = NULL;
       pagedir_activate (NULL);
       pagedir_destroy (pd);
+    }
+
+  printf ("%s: exit(%d)\n", cur->name, cur->wait->exit_status);
+  lock_acquire (&cur->wait->status_lock);
+  if (cur->wait->parent_dead)
+    {
+      lock_release (&cur->wait->status_lock);
+      free (cur->wait);
+    }
+  else
+    {
+      sema_up (&cur->wait->wait_sem);
+      cur->wait->child_dead = true;
+      lock_release (&cur->wait->status_lock);
+    }
+
+  struct list_elem *e;
+  
+  for (e = list_begin (&cur->child_list); e != list_end (&cur->child_list);
+       e = list_next (e))
+    {
+      struct wait_struct *child_wait = list_entry (e, struct wait_struct,
+                                                   elem);
+      lock_acquire (&child_wait->status_lock);
+      if (child_wait->child_dead)
+        {
+          lock_release (&child_wait->status_lock);
+          free (child_wait);
+        }
+      else
+        {
+          child_wait->parent_dead = true;
+          lock_release (&child_wait->status_lock);
+        }
     }
 }
 
