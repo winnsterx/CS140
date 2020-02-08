@@ -156,9 +156,16 @@ struct list_elem *list_back (struct list *);
 size_t list_size (struct list *);
 bool list_empty (struct list *);
 
+/* Checks element E for a condition givien auxiliary data AUX,
+   returns true if the condition is met, false otherwise. */
+typedef bool list_search_func (const struct list_elem *e, void *aux);
+
 /* Miscellaneous. */
+struct list_elem *list_search_first (const struct list *, 
+                                     list_search_func *, 
+                                     void *aux);
 void list_reverse (struct list *);
-
+
 /* Compares the value of two list elements A and B, given
    auxiliary data AUX.  Returns true if A is less than B, or
    false if A is greater than or equal to B. */

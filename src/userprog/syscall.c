@@ -24,6 +24,13 @@ static void seek (int fd, unsigned position);
 static unsigned tell (int fd);
 static void close (int fd);
 
+struct fd_struct
+  {
+    int fd;
+    struct file *file;
+    struct list_elem elem;
+  };
+
 void
 syscall_init (void) 
 {
@@ -107,6 +114,22 @@ validate_name (const char *name)
     }
   
   return false;
+}
+
+struct fd_struct *
+elem_to_fd (struct list_elem *e)
+{
+   return list_entry (e, struct fd_struct, elem);
+}
+
+bool fd_gap (const struct list_elem *cur, void *aux)
+{
+  struct list_elem *fd_list_head = (struct list_elem *) aux;
+  struct list_elem *prev = list_prev (cur);
+  if (prev == fd_list_head)
+    return elem_to_fd (cur)->fd > 2;
+
+  return (elem_to_fd (cur)->fd > elem_to_fd (prev)->fd + 1);
 }
 
 static void
@@ -213,6 +236,36 @@ remove (const char *name)
 static int
 open (const char *name)
 {
+  if (!validate_name (name))
+    thread_exit ();
+
+  lock_acquire (&thread_filesys_lock);
+  struct file *file = filesys_open (name);
+  lock_release (&thread_filesys_lock);
+
+  if (file == NULL)
+    {
+      printf ("%s\n", name);
+      return -1;
+    }
+
+  struct list *fd_list = &thread_current ()->fd_list;
+  void *head = list_head (fd_list);
+  struct list_elem *e = list_search_first (fd_list, fd_gap, head);
+  
+  // WHAT IF MALLOC FAILS
+  struct fd_struct *fd_struct = malloc (sizeof (struct fd_struct));
+  int fd;
+
+  if (list_prev (e) == head)
+    fd = 2;
+  else
+    fd = elem_to_fd (list_prev (e))->fd + 1;
+
+  fd_struct->fd = fd;
+  list_insert (e, &fd_struct->elem);
+
+  return fd;
 }
 
 static int

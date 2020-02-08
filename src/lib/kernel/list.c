@@ -312,6 +312,22 @@ list_empty (struct list *list)
   return list_begin (list) == list_end (list);
 }
 
+/* Returns first element to match a condition specified by FUNC */
+struct list_elem *
+list_search_first (const struct list *list, list_search_func *func, void *aux)
+{  
+   struct list_elem *e;
+
+   ASSERT (list != NULL);
+   ASSERT (func != NULL);
+ 
+   for (e = list_begin (list); e != list_end (list); e = list_next (e))
+     if (func (e, aux))
+       break;
+
+   return e;
+}
+
 /* Swaps the `struct list_elem *'s that A and B point to. */
 static void
 swap (struct list_elem **a, struct list_elem **b) 
