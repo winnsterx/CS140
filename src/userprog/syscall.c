@@ -116,13 +116,14 @@ validate_name (const char *name)
   return false;
 }
 
-struct fd_struct *
+static struct fd_struct *
 elem_to_fd (struct list_elem *e)
 {
    return list_entry (e, struct fd_struct, elem);
 }
 
-bool fd_gap (const struct list_elem *cur, void *aux)
+static bool 
+fd_gap (const struct list_elem *cur, void *aux)
 {
   struct list_elem *fd_list_head = (struct list_elem *) aux;
   struct list_elem *prev = list_prev (cur);
@@ -131,6 +132,25 @@ bool fd_gap (const struct list_elem *cur, void *aux)
 
   return (elem_to_fd (cur)->fd > elem_to_fd (prev)->fd + 1);
 }
+
+static bool 
+fd_matches (const struct list_elem *cur, void *aux)
+{
+  int fd = (int) aux;
+  return elem_to_fd (cur)->fd == fd;
+}
+
+static void
+free_fd_struct (struct fd_struct *fd_struct)
+  {
+    list_remove (&fd_struct->elem);
+    lock_acquire (&thread_filesys_lock);
+    file_close (fd_struct->file);
+    lock_release (&thread_filesys_lock);
+    printf("Will free: %p\n", (uint8_t *) fd_struct);
+    free ((uint8_t *) fd_struct);
+    printf ("struct freed\n");
+  }
 
 static void
 syscall_handler (struct intr_frame *f UNUSED) 
@@ -203,8 +223,16 @@ halt (void)
 
 NO_RETURN static void
 exit (int status)
-{  
-  thread_current ()->wait->exit_status = status;
+{
+  struct thread *cur = thread_current ();  
+  cur->wait->exit_status = status;
+  struct list_elem *e;
+  for (e = list_begin (&cur->fd_list); e != list_end (&cur->fd_list);
+       e = list_next (e))
+    {
+      free_fd_struct (elem_to_fd (e));
+    }  
+
   thread_exit ();
 }
 
@@ -254,7 +282,9 @@ open (const char *name)
   struct list_elem *e = list_search_first (fd_list, fd_gap, head);
   
   // WHAT IF MALLOC FAILS
+
   struct fd_struct *fd_struct = malloc (sizeof (struct fd_struct));
+  printf ("Allocated: %p\n", fd_struct);
   int fd;
 
   if (list_prev (e) == head)
@@ -263,6 +293,7 @@ open (const char *name)
     fd = elem_to_fd (list_prev (e))->fd + 1;
 
   fd_struct->fd = fd;
+  fd_struct->file = file;
   list_insert (e, &fd_struct->elem);
 
   return fd;
@@ -308,4 +339,12 @@ tell (int fd)
 static void
 close (int fd)
 {
+  struct thread *cur = thread_current ();
+  struct list_elem *e = list_search_first (&cur->fd_list,
+                                           fd_matches, (void *) fd);
+
+  if (e == list_end (&cur->fd_list))
+    thread_exit ();
+
+  free_fd_struct (elem_to_fd (e));  
 }
