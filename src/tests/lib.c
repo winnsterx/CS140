@@ -115,6 +115,8 @@ check_file_handle (int fd,
   /* Warn about file of wrong size.  Don't fail yet because we
      may still be able to get more information by reading the
      file. */
+  msg ("filesize A");
+  msg ("filesize B");
   file_size = filesize (fd);
   if (file_size != size)
     msg ("size of %s (%zu) differs from expected (%zu)",
@@ -123,6 +125,7 @@ check_file_handle (int fd,
   /* Read the file block-by-block, comparing data as we go. */
   while (ofs < size)
     {
+      msg ("reading data"); //DELETE
       char block[512];
       size_t block_size, ret_val;
 
@@ -151,7 +154,7 @@ void
 check_file (const char *file_name, const void *buf, size_t size) 
 {
   int fd;
-
+  msg ("MAKING IT TO HANDLE?"); // DELETE
   CHECK ((fd = open (file_name)) > 1, "open \"%s\" for verification",
          file_name);
   check_file_handle (fd, file_name, buf, size);

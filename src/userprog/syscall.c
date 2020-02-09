@@ -2,14 +2,19 @@
 #include <limits.h>
 #include <stdio.h>
 #include <syscall-nr.h>
+#include "filesys/file.h"
+#include "devices/input.h"
+#include "devices/shutdown.h"
+#include "filesys/filesys.h"
 #include "lib/kernel/console.h"
 #include "threads/interrupt.h"
+#include "threads/palloc.h"
 #include "threads/thread.h"
 #include "threads/vaddr.h"
 #include "userprog/process.h"
+// #include "filesys/file.h"
 
 static void syscall_handler (struct intr_frame *);
-
 static void halt (void);
 static void exit (int status);
 static tid_t exec (const char *name);
@@ -29,6 +34,13 @@ struct fd_struct
     int fd;
     struct file *file;
     struct list_elem elem;
+  };
+
+struct file
+  {
+    void *inode;
+    off_t pos;
+    bool deny_write;
   };
 
 void
@@ -59,13 +71,13 @@ static unsigned overflow_adjusted_size (const uint8_t *uaddr, unsigned size)
 /* In a range of user addresses starting at UADDR, this returns the first
    invalid user address, or the first address beyond the specified range, 
    whichever comes first. Returns UADDR if the UADDR is invalid. */
-static const uint8_t *
+static uint8_t *
 first_invalid_uaddr (const uint8_t *uaddr, unsigned size)
 {
   /* Check size = 0 case */
   if (uaddr == NULL || size == 0)
-    return uaddr;
-  
+    return (uint8_t *) uaddr;
+ 
   size = overflow_adjusted_size (uaddr, size);
 
   uint8_t *pg_ptr = pg_round_down (uaddr);
@@ -75,7 +87,7 @@ first_invalid_uaddr (const uint8_t *uaddr, unsigned size)
       if (is_kernel_vaddr (pg_ptr) || get_user_byte (pg_ptr) == -1)
         {
           if (pg_ptr == first_pg_ptr)
-            return uaddr;
+            return (uint8_t *) uaddr;
           
           break;
         }
@@ -97,17 +109,19 @@ validate_range (const uint8_t *uaddr, unsigned size)
   return ptr >= uaddr + size;
 }
 
+/* Ensures a name is less than a page long, and lives in 
+   valid user memory */
 static bool 
 validate_name (const char *name)
 {
-  char* highest = first_invalid_uaddr (name, PGSIZE);
+  char* highest = (char*) first_invalid_uaddr ((uint8_t *) name, PGSIZE);
   if (highest == name)
     return false;
   
   unsigned max = highest - name;
   max = max > PGSIZE ? PGSIZE : max;
 
-  for (int i = 0; i < max; i++)
+  for (unsigned i = 0; i < max; i++)
     {
       if (name[i] == '\0')
         return true;
@@ -116,30 +130,37 @@ validate_name (const char *name)
   return false;
 }
 
+/* Converts a list element pointer to its corresponding
+   struct pointer */
 static struct fd_struct *
-elem_to_fd (struct list_elem *e)
+elem_to_fd (const struct list_elem *e)
 {
    return list_entry (e, struct fd_struct, elem);
 }
 
+/* Returns true if there is a gap between the current
+   and previous fds in the list */
 static bool 
 fd_gap (const struct list_elem *cur, void *aux)
 {
   struct list_elem *fd_list_head = (struct list_elem *) aux;
-  struct list_elem *prev = list_prev (cur);
+  struct list_elem *prev = list_prev ((struct list_elem *) cur);
   if (prev == fd_list_head)
     return elem_to_fd (cur)->fd > 2;
 
   return (elem_to_fd (cur)->fd > elem_to_fd (prev)->fd + 1);
 }
 
+/* Returns if the passed elements fd is greater than
+   or equal to the fd passed into aux. */
 static bool 
-fd_leq (const struct list_elem *cur, void *aux)
+fd_geq (const struct list_elem *cur, void *aux)
 {
   int fd = (int) aux;
    return elem_to_fd (cur)->fd >= fd;
 }
 
+/* Frees an fd struct and closes its associated file */
 static void
 free_fd_struct (struct fd_struct *fd_struct)
   {
@@ -147,17 +168,17 @@ free_fd_struct (struct fd_struct *fd_struct)
     lock_acquire (&thread_filesys_lock);
     file_close (fd_struct->file);
     lock_release (&thread_filesys_lock);
-    if (!validate_range (fd_struct, sizeof fd_struct))
-      printf ("WHAT THE HELL\n");
-    free (fd_struct);
+    palloc_free_page (fd_struct);//free (fd_struct);
    }
 
-static struct thread_struct *
+/* Searches for struct of corresponding fd. Returns NULL if it is not
+   present */
+static struct fd_struct *
 find_fd_struct (int fd)
 {  
   struct thread *cur = thread_current ();
   struct list_elem *e = list_search_first (&cur->fd_list,
-                                           fd_leq, (void *) fd);
+                                           fd_geq, (void *) fd);
 
   if (e ==list_end (&cur->fd_list))
   if (e == list_end (&cur->fd_list) || elem_to_fd (e)->fd != fd)
@@ -166,14 +187,23 @@ find_fd_struct (int fd)
   return elem_to_fd (e);
 }
 
+/* Free all of a thread's fd structs */
+void
+free_all_fd_structs (void)
+{ 
+  struct thread *cur = thread_current ();  
+  struct list_elem *e;
+  for (e = list_begin (&cur->fd_list); e != list_end (&cur->fd_list);
+       e = list_next (e))
+    {
+      free_fd_struct (elem_to_fd (e));
+    }
+}
+
+/* Handles incoming syscalls and dispatches the correct function */
 static void
 syscall_handler (struct intr_frame *f UNUSED) 
 {
-
-  // hex_dump (f->esp, f->esp, 100, true);
-  /* Assuming a proper syscall, there should be at least 4
-     words on the caller stack */
-
   if (!validate_range (f->esp, 4 * sizeof (int)))
     thread_exit ();
 
@@ -233,6 +263,7 @@ syscall_handler (struct intr_frame *f UNUSED)
 NO_RETURN static void
 halt (void)
 {
+  shutdown_power_off ();
 }
 
 NO_RETURN static void
@@ -240,13 +271,6 @@ exit (int status)
 {
   struct thread *cur = thread_current ();  
   cur->wait->exit_status = status;
-  struct list_elem *e;
-  for (e = list_begin (&cur->fd_list); e != list_end (&cur->fd_list);
-       e = list_next (e))
-    {
-      free_fd_struct (elem_to_fd (e));
-    }  
-
   thread_exit ();
 }
 
@@ -287,7 +311,7 @@ remove (const char *name)
 
   bool success;
   lock_acquire (&thread_filesys_lock);
-  success = filesys_remove ();
+  success = filesys_remove (name);
   lock_release (&thread_filesys_lock);
  
   return success;
@@ -305,7 +329,6 @@ open (const char *name)
 
   if (file == NULL)
    {
-    printf ("open failed\n");
     return -1;
   }
 
@@ -313,9 +336,12 @@ open (const char *name)
   void *head = list_head (fd_list);
   struct list_elem *e = list_search_first (fd_list, fd_gap, head);
   
-  // WHAT IF MALLOC FAILS
-
-  struct fd_struct *fd_struct = malloc (sizeof (struct fd_struct));
+  struct fd_struct *fd_struct = palloc_get_page (0);//malloc (sizeof (struct fd_struct));
+  if (fd_struct == NULL)
+    {
+      file_close (file);
+      return -1;
+    }
   int fd;
 
   if (list_prev (e) == head)
@@ -325,10 +351,10 @@ open (const char *name)
 
   fd_struct->fd = fd;
   fd_struct->file = file;
-  printf ("POINTER: %p\n", file);
   list_insert (e, &fd_struct->elem);
 
-  printf ("FUCK\n");
+  printf ("%p\n", file->inode);
+
   return fd;
 }
 
@@ -343,7 +369,7 @@ filesize (int fd)
   int length = file_length (fd_struct->file);
   lock_release (&thread_filesys_lock);
 
-  return file_length (fd_struct->file);
+  return length;
 }
 
 static int
@@ -357,7 +383,7 @@ read (int fd, void *buffer, unsigned length)
 
   if (fd == STDIN_FILENO)
     {
-      int i = 0;
+      unsigned i = 0;
       for (; i < length; i++)
         {
           ((uint8_t *) buffer)[i] = input_getc ();
@@ -370,11 +396,13 @@ read (int fd, void *buffer, unsigned length)
   if (fd_struct == NULL)
     return -1;
   
+  printf ("BUFFER: %p\n", buffer);
+  printf ("LENGTH: %u\n", length);
   int result;
   lock_acquire (&thread_filesys_lock);
-  printf ("start reading: %p\n", fd_struct->file);
+  printf ("%p\n", fd_struct->file->inode);
   result = file_read (fd_struct->file, buffer, length);
-  printf ("reading done\n");
+  printf ("result: %d\n");
   lock_release (&thread_filesys_lock);
   
   return result;
@@ -415,7 +443,7 @@ seek (int fd, unsigned position)
     return;
 
   lock_acquire (&thread_filesys_lock);
-  file_seek (fd, position);
+  file_seek (fd_struct->file, position);
   lock_release (&thread_filesys_lock);
 }
 
@@ -428,7 +456,7 @@ tell (int fd)
   
   unsigned pos;
   lock_acquire (&thread_filesys_lock);
-  file_tell (fd_struct->file);
+  pos = file_tell (fd_struct->file);
   lock_release (&thread_filesys_lock);
 
   return pos;
@@ -439,7 +467,7 @@ close (int fd)
 {
   struct fd_struct *fd_struct = find_fd_struct (fd);
   if (fd_struct == NULL)
-    thread_exit (); //should we be this harsh?
+    thread_exit ();
 
   free_fd_struct (fd_struct);  
 }

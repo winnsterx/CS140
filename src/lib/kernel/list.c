@@ -314,7 +314,7 @@ list_empty (struct list *list)
 
 /* Returns first element to match a condition specified by FUNC */
 struct list_elem *
-list_search_first (const struct list *list, list_search_func *func, void *aux)
+list_search_first (struct list *list, list_search_func *func, void *aux)
 {  
    struct list_elem *e;
 

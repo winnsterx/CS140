@@ -161,7 +161,7 @@ bool list_empty (struct list *);
 typedef bool list_search_func (const struct list_elem *e, void *aux);
 
 /* Miscellaneous. */
-struct list_elem *list_search_first (const struct list *, 
+struct list_elem *list_search_first (struct list *, 
                                      list_search_func *, 
                                      void *aux);
 void list_reverse (struct list *);

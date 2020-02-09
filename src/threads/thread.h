@@ -102,6 +102,7 @@ struct thread
     struct wait_struct *wait;
     struct list child_list;
     struct list fd_list;
+    struct file *exec_file;
 #endif
 
     /* Owned by thread.c. */

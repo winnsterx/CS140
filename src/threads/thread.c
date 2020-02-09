@@ -284,9 +284,7 @@ thread_exit (void)
   ASSERT (!intr_context ());
 
 #ifdef USERPROG
-  /* Indicates that this thread is a process. */
-  if (thread_current ()->wait)
-    process_exit ();
+  process_exit ();
 #endif
 
   /* Remove thread from all threads list, set our status to dying,
@@ -470,6 +468,7 @@ init_thread (struct thread *t, const char *name, int priority)
 #ifdef USERPROG
   list_init (&t->child_list);
   list_init (&t->fd_list);
+  t->exec_file = NULL;
 #endif
 
   old_level = intr_disable ();

@@ -122,7 +122,6 @@ kill (struct intr_frame *f)
 static void
 page_fault (struct intr_frame *f) 
 {
-  printf ("I giess it aint a pge fault\n");
   bool not_present;  /* True: not-present page, false: writing r/o page. */
   bool write;        /* True: access was write, false: access was read. */
   bool user;         /* True: access by user, false: access by kernel. */
@@ -151,7 +150,7 @@ page_fault (struct intr_frame *f)
 
   if (!user)
     {
-      f->eip = f->eax;
+      f->eip = (void*) f->eax;
       f->eax = 0xffffffff;
       return;
     }

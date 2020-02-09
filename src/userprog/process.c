@@ -7,6 +7,7 @@
 #include <string.h>
 #include "userprog/gdt.h"
 #include "userprog/pagedir.h"
+#include "userprog/syscall.h"
 #include "userprog/tss.h"
 #include "filesys/directory.h"
 #include "filesys/file.h"
@@ -54,12 +55,11 @@ process_execute (const char *command)
   strlcpy (file_name, command, sizeof_name);
   char *name_end = strchr (file_name, ' ');
   if (name_end != NULL)
-  {
     *name_end = '\0';
-   }
-  // WHAT IF MALLOC FAILS
-  struct wait_struct *wait = palloc_get_page (0);/* (struct wait_struct *) 
-                             malloc (sizeof (struct wait_struct)); */
+  
+  struct wait_struct *wait = malloc (sizeof (struct wait_struct));
+  if (wait == NULL)
+    return TID_ERROR;
   sema_init (&wait->wait_sem, 0);
   lock_init (&wait->status_lock);
   wait->exit_status = -1; /* Changed on a proper exit */
@@ -73,11 +73,18 @@ process_execute (const char *command)
   sema_init (&process_args.process_loaded_sem, 0);
 
   /* Create a new thread to execute FILE_NAME. */
-  lock_acquire (&wait->status_lock);
+int lock_no = 9;  
+printf ("Acquiring lock: %d\n", lock_no);
+lock_acquire (&wait->status_lock);
+      printf ("Acquired lock: %d\n", lock_no);
   tid = thread_create (file_name, PRI_DEFAULT, start_process, &process_args);
+
   if (tid == TID_ERROR)
     {
       palloc_free_page (cmd_copy);
+      printf ("Releasing lock: %d\n", lock_no);
+lock_release (&wait->status_lock);
+      printf ("Released lock: %d\n", lock_no);
       free (wait);
       return TID_ERROR;
     }
@@ -93,9 +100,10 @@ process_execute (const char *command)
     {
       list_push_back (&thread_current ()->child_list, &wait->elem);
     }  
- 
-  lock_release (&wait->status_lock);
   
+  printf ("Releasing lock: %d\n", lock_no);
+lock_release (&wait->status_lock);
+      printf ("Released lock: %d\n", lock_no);
   return tid;
 }
 
@@ -147,7 +155,7 @@ start_process (void *process_args)
    This function will be implemented in problem 2-2.  For now, it
    does nothing. */
 int
-process_wait (tid_t child_tid UNUSED) 
+process_wait (tid_t child_tid) 
 {
   struct thread *cur = thread_current ();
   struct list_elem *e;
@@ -166,13 +174,18 @@ process_wait (tid_t child_tid UNUSED)
     }
   
   if (child_wait == NULL)
+  {
     return -1;
+  }
   
   sema_down (&child_wait->wait_sem);
-  
-  // MAYBE CHANGE THIS SO CHILD NEVR FREES SELF
-  lock_acquire (&child_wait->status_lock);
-  lock_release (&child_wait->status_lock);
+int lock_no = 8;  
+  printf ("Acquiring lock: %d\n", lock_no);
+lock_acquire (&child_wait->status_lock);
+      printf ("Acquired lock: %d\n", lock_no);
+  printf ("Releasing lock: %d\n", lock_no);
+lock_release (&child_wait->status_lock);
+      printf ("Released lock: %d\n", lock_no);
   int exit_status = child_wait->exit_status;
   list_remove (&child_wait->elem);
   free (child_wait);
@@ -186,6 +199,11 @@ process_exit (void)
 {
   struct thread *cur = thread_current ();
   uint32_t *pd;
+  
+  free_all_fd_structs ();
+
+  if (cur->exec_file != NULL)
+    file_close (cur->exec_file);
 
   /* Destroy the current process's page directory and switch back
      to the kernel-only page directory. */
@@ -204,38 +222,58 @@ process_exit (void)
       pagedir_destroy (pd);
     }
 
+  struct list_elem *e;
+int lock_no = 600;  
+  for (e = list_begin (&cur->child_list); e != list_end (&cur->child_list);
+       e = list_next (e))
+    {
+      struct wait_struct *child_wait = list_entry (e, struct wait_struct,
+                                                   elem);
+      printf ("Acquiring lock: %d\n", lock_no);
+lock_acquire (&child_wait->status_lock);
+      printf ("Acquired lock: %d\n", lock_no);
+      if (child_wait->child_dead)
+        {
+          printf ("Releasing lock: %d\n", lock_no);
+lock_release (&child_wait->status_lock);
+      printf ("Released lock: %d\n", lock_no);
+          free (child_wait);
+        }
+      else
+        {
+          child_wait->parent_dead = true;
+          printf ("Releasing lock: %d\n", lock_no);
+lock_release (&child_wait->status_lock);
+      printf ("Released lock: %d\n", lock_no);
+        }
+     lock_no++;
+    }
+
+  if (cur->wait == NULL) 
+  {
+    /* Thread is not a process */
+    return;
+  }
+
   printf ("%s: exit(%d)\n", cur->name, cur->wait->exit_status);
-  lock_acquire (&cur->wait->status_lock);
+lock_no = 7;
+  printf ("Acquiring lock: %d\n", lock_no);
+lock_acquire (&cur->wait->status_lock);
+      printf ("Acquired lock: %d\n", lock_no);
   if (cur->wait->parent_dead)
     {
-      lock_release (&cur->wait->status_lock);
+      printf ("Releasing lock: %d\n", lock_no);
+lock_release (&cur->wait->status_lock);
+      printf ("Released lock: %d\n", lock_no);
       free (cur->wait);
     }
   else
     {
       sema_up (&cur->wait->wait_sem);
       cur->wait->child_dead = true;
-      lock_release (&cur->wait->status_lock);
-    }
-
-  struct list_elem *e;
-  
-  for (e = list_begin (&cur->child_list); e != list_end (&cur->child_list);
-       e = list_next (e))
-    {
-      struct wait_struct *child_wait = list_entry (e, struct wait_struct,
-                                                   elem);
-      lock_acquire (&child_wait->status_lock);
-      if (child_wait->child_dead)
-        {
-          lock_release (&child_wait->status_lock);
-          free (child_wait);
-        }
-      else
-        {
-          child_wait->parent_dead = true;
-          lock_release (&child_wait->status_lock);
-        }
+      printf ("Releasing lock: %d\n", lock_no);
+lock_release (&cur->wait->status_lock);
+      printf ("Released lock: %d\n", lock_no);
     }
 }
 
@@ -339,24 +377,33 @@ load (const char *command, void (**eip) (void), void **esp)
   bool success = false;
   int i;
 
+int lock_no = 0;
   /* Allocate and activate page directory. */
   t->pagedir = pagedir_create ();
   if (t->pagedir == NULL) 
     goto done;
   process_activate ();
-
   /* Open executable file. */
-  lock_acquire (&thread_filesys_lock);
+  printf ("Acquiring lock: %d\n", lock_no);
+lock_acquire (&thread_filesys_lock);
+      printf ("Acquired lock: %d\n", lock_no);
   file = filesys_open (t->name);
-  lock_release (&thread_filesys_lock);
+  t->exec_file = file;
+  printf ("Releasing lock: %d\n", lock_no);
+lock_release (&thread_filesys_lock);
+      printf ("Released lock: %d\n", lock_no);
   if (file == NULL) 
     {
       printf ("load: %s: open failed\n", t->name);
       goto done; 
     }
 
+  file_deny_write (file);
   /* Read and verify executable header. */
-  lock_acquire (&thread_filesys_lock);
+  lock_no = 1;
+  printf ("Acquiring lock: %d\n", lock_no);
+lock_acquire (&thread_filesys_lock);
+      printf ("Acquired lock: %d\n", lock_no);
   if (file_read (file, &ehdr, sizeof ehdr) != sizeof ehdr
       || memcmp (ehdr.e_ident, "\177ELF\1\1\1", 7)
       || ehdr.e_type != 2
@@ -368,23 +415,29 @@ load (const char *command, void (**eip) (void), void **esp)
       printf ("load: %s: error loading executable\n", t->name);
       goto done; 
     }
-  lock_release (&thread_filesys_lock);
+  printf ("Releasing lock: %d\n", lock_no);
+lock_release (&thread_filesys_lock);
+      printf ("Released lock: %d\n", lock_no);
 
   /* Read program headers. */
   file_ofs = ehdr.e_phoff;
+  lock_no = 200;
   for (i = 0; i < ehdr.e_phnum; i++) 
     {
       struct Elf32_Phdr phdr;
-        
-      lock_acquire (&thread_filesys_lock);
+      printf ("Acquiring lock: %d\n", lock_no);
+lock_acquire (&thread_filesys_lock);
+      printf ("Acquired lock: %d\n", lock_no);
       if (file_ofs < 0 || file_ofs > file_length (file))
         goto done;
       file_seek (file, file_ofs);
   
       if (file_read (file, &phdr, sizeof phdr) != sizeof phdr)
         goto done;
-      lock_release (&thread_filesys_lock);
-
+      printf ("Releasing lock: %d\n", lock_no);
+lock_release (&thread_filesys_lock);
+      printf ("Released lock: %d\n", lock_no);
+      lock_no++;
       file_ofs += sizeof phdr;
       switch (phdr.p_type) 
         {
@@ -443,15 +496,16 @@ load (const char *command, void (**eip) (void), void **esp)
 
   /* Start address. */
   *eip = (void (*) (void)) ehdr.e_entry;
-
   success = true;
 
  done:
-  /* We arrive here whether the load is successful or not. */
-  if (!lock_held_by_current_thread (&thread_filesys_lock))
-    lock_acquire (&thread_filesys_lock);
-  file_close (file);
-  lock_release (&thread_filesys_lock);
+ /* We arrive here whether the load is successful or not. */
+ if (lock_held_by_current_thread (&thread_filesys_lock))
+   {
+     printf ("Releasing lock: %d\n", lock_no);
+lock_release (&thread_filesys_lock);
+      printf ("Released lock: %d\n", lock_no);
+   }
   
   return success;
 }
@@ -468,15 +522,21 @@ validate_segment (const struct Elf32_Phdr *phdr, struct file *file)
   /* p_offset and p_vaddr must have the same page offset. */
   if ((phdr->p_offset & PGMASK) != (phdr->p_vaddr & PGMASK)) 
     return false; 
-
+int lock_no = 3;
   /* p_offset must point within FILE. */
-  lock_acquire (&thread_filesys_lock);
+  printf ("Acquiring lock: %d\n", lock_no);
+lock_acquire (&thread_filesys_lock);
+      printf ("Acquired lock: %d\n", lock_no);
   if (phdr->p_offset > (Elf32_Off) file_length (file)) 
     {
-      lock_release (&thread_filesys_lock);
+      printf ("Releasing lock: %d\n", lock_no);
+lock_release (&thread_filesys_lock);
+      printf ("Released lock: %d\n", lock_no);
       return false;
     }
-  lock_release (&thread_filesys_lock);
+  printf ("Releasing lock: %d\n", lock_no);
+lock_release (&thread_filesys_lock);
+      printf ("Released lock: %d\n", lock_no);
 
   /* p_memsz must be at least as big as p_filesz. */
   if (phdr->p_memsz < phdr->p_filesz) 
@@ -531,10 +591,15 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
   ASSERT ((read_bytes + zero_bytes) % PGSIZE == 0);
   ASSERT (pg_ofs (upage) == 0);
   ASSERT (ofs % PGSIZE == 0);
-  
-  lock_acquire (&thread_filesys_lock);
+  int lock_no = 4;
+  printf ("Acquiring lock: %d\n", lock_no);
+lock_acquire (&thread_filesys_lock);
+      printf ("Acquired lock: %d\n", lock_no);
   file_seek (file, ofs);
-  lock_release (&thread_filesys_lock);
+  printf ("Releasing lock: %d\n", lock_no);
+lock_release (&thread_filesys_lock);
+      printf ("Released lock: %d\n", lock_no);
+  lock_no = 500;
   while (read_bytes > 0 || zero_bytes > 0) 
     {
       /* Calculate how to fill this page.
@@ -549,14 +614,21 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
         return false;
 
       /* Load this page. */
-      lock_acquire (&thread_filesys_lock);
+      printf ("Acquiring lock: %d\n", lock_no);
+lock_acquire (&thread_filesys_lock);
+      printf ("Acquired lock: %d\n", lock_no);
       if (file_read (file, kpage, page_read_bytes) != (int) page_read_bytes)
         {
-          lock_release (&thread_filesys_lock);
+          printf ("Releasing lock: %d\n", lock_no);
+lock_release (&thread_filesys_lock);
+      printf ("Released lock: %d\n", lock_no);
           palloc_free_page (kpage);
           return false; 
         }
-      lock_release (&thread_filesys_lock);
+      printf ("Releasing lock: %d\n", lock_no);
+lock_release (&thread_filesys_lock);
+      printf ("Released lock: %d\n", lock_no);
+      lock_no++;
       memset (kpage + page_read_bytes, 0, page_zero_bytes);
 
       /* Add the page to the process's address space. */
@@ -606,8 +678,6 @@ place_arguments (const char *command, void *kpage, void **esp)
   char **argv_buf = (char **) kpage;
   int argc = 0;
 
-  // OVERLAP CHECK LATER 
-
   for (;;)
   {
     while (*ch == ' ')
@@ -616,6 +686,11 @@ place_arguments (const char *command, void *kpage, void **esp)
     if (token_length == 0)
       break;
     off_esp -= (token_length + 1);
+    if (off_esp < kpage)
+      {
+        palloc_free_page (kpage);
+        return false;
+      }
     *esp -= (token_length + 1);
     strlcpy (off_esp, ch, token_length + 1);
     argv_buf[argc++] = *esp;
@@ -627,11 +702,18 @@ place_arguments (const char *command, void *kpage, void **esp)
   /* Word-align memory before pushing further. */
   off_esp = (void *) ROUND_DOWN ((uintptr_t) off_esp, 4);
   *esp = (void *) ROUND_DOWN ((uintptr_t) *esp, 4);
-
+  
   /* Copy argv array into its proper location, zero its source,
      copy argv pointer and argc */
   unsigned bytes_to_copy = (argc + 1) * sizeof (char *);
   off_esp -= bytes_to_copy;
+
+  /* Account for argc, argv, return address */
+  if (off_esp - 3 * sizeof (int) < kpage)
+    {
+      palloc_free_page (kpage);
+      return false;
+    }
   *esp -= bytes_to_copy;
   memmove (off_esp, argv_buf, bytes_to_copy);
   memset (argv_buf, 0, bytes_to_copy);
@@ -650,7 +732,6 @@ place_arguments (const char *command, void *kpage, void **esp)
   *(void **) off_esp = NULL;
 
   return true;
-  // SHOULD RETURN FALSE IF NO FIT
 }
 
 /* Adds a mapping from user virtual address UPAGE to kernel
@@ -671,4 +752,5 @@ install_page (void *upage, void *kpage, bool writable)
      address, then map our page there. */
   return (pagedir_get_page (t->pagedir, upage) == NULL
           && pagedir_set_page (t->pagedir, upage, kpage, writable));
+
 }
