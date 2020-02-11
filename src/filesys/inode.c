@@ -6,7 +6,7 @@
 #include "filesys/filesys.h"
 #include "filesys/free-map.h"
 #include "threads/malloc.h"
-#include <stdio.h> //DELETE AFTER
+
 /* Identifies an inode. */
 #define INODE_MAGIC 0x494e4f44
 
@@ -203,8 +203,7 @@ inode_read_at (struct inode *inode, void *buffer_, off_t size, off_t offset)
   uint8_t *buffer = buffer_;
   off_t bytes_read = 0;
   uint8_t *bounce = NULL;
-  
-  printf ("inside inode\n");
+
   while (size > 0) 
     {
       /* Disk sector to read, starting byte offset within sector. */
@@ -236,15 +235,8 @@ inode_read_at (struct inode *inode, void *buffer_, off_t size, off_t offset)
               if (bounce == NULL)
                 break;
             }
-          //printf ("before block read\n");
           block_read (fs_device, sector_idx, bounce);
-          //printf ("after block read\n");
-          //char buf[chunk_size + 1];
-          //strlcpy (buf, bounce + sector_ofs, chunk_size + 1);
-          //printf ("%s\n", bounce + sector_ofs);
-          //printf ("BUFFER IN INODE: %p\n", buffer);
           memcpy (buffer + bytes_read, bounce + sector_ofs, chunk_size);
-          //printf ("memcpy should have just memcpy'd\n");
         }
       
       /* Advance. */
@@ -253,7 +245,7 @@ inode_read_at (struct inode *inode, void *buffer_, off_t size, off_t offset)
       bytes_read += chunk_size;
     }
   free (bounce);
-  printf ("inode left\n");
+
   return bytes_read;
 }
 
