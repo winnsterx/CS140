@@ -188,7 +188,7 @@ process_exit (void)
 {
   struct thread *cur = thread_current ();
   uint32_t *pd;
-  free_all_fd_structs ();
+  close_all_files ();
 
   if (cur->exec_file != NULL)
     file_close (cur->exec_file);

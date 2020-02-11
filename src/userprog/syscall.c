@@ -8,11 +8,10 @@
 #include "filesys/filesys.h"
 #include "lib/kernel/console.h"
 #include "threads/interrupt.h"
-#include "threads/palloc.h"
+#include "threads/malloc.h"
 #include "threads/thread.h"
 #include "threads/vaddr.h"
 #include "userprog/process.h"
-// #include "filesys/file.h"
 
 static void syscall_handler (struct intr_frame *);
 static void halt (void);
@@ -36,19 +35,15 @@ struct fd_struct
     struct list_elem elem;
   };
 
-struct file
-  {
-    void *inode;
-    off_t pos;
-    bool deny_write;
-  };
-
 void
 syscall_init (void) 
 {
   intr_register_int (0x30, 3, INTR_ON, syscall_handler, "syscall");
 }
 
+/* Dereferences a byte at addres UADDR. Returns -1 if the address is
+   unmapped or invalid, otherwise returns the byte held by the address.
+   This function assumes UADDR < PHYS_BASE. */
 static int
 get_user_byte (const uint8_t *uaddr)
 {
@@ -59,6 +54,9 @@ get_user_byte (const uint8_t *uaddr)
   return result;
 }
 
+/* Checks whether adding SIZE to UADDR would overflow UADDR. If not, size
+   is returned. Otherwize, the largest possible size without overflow
+   is returned. */
 static unsigned overflow_adjusted_size (const uint8_t *uaddr, unsigned size)
 {
   if (uaddr + size < uaddr)
@@ -74,7 +72,6 @@ static unsigned overflow_adjusted_size (const uint8_t *uaddr, unsigned size)
 static uint8_t *
 first_invalid_uaddr (const uint8_t *uaddr, unsigned size)
 {
-  /* Check size = 0 case */
   if (uaddr == NULL || size == 0)
     return (uint8_t *) uaddr;
  
@@ -158,19 +155,8 @@ static bool
 fd_geq (const struct list_elem *cur, void *aux)
 {
   int fd = (int) aux;
-   return elem_to_fd (cur)->fd >= fd;
+  return elem_to_fd (cur)->fd >= fd;
 }
-
-/* Frees an fd struct and closes its associated file */
-static void
-free_fd_struct (struct fd_struct *fd_struct)
-  {
-    list_remove (&fd_struct->elem);
-    lock_acquire (&thread_filesys_lock);
-    file_close (fd_struct->file);
-    lock_release (&thread_filesys_lock);
-    palloc_free_page (fd_struct);//free (fd_struct);
-   }
 
 /* Searches for struct of corresponding fd. Returns NULL if it is not
    present */
@@ -188,27 +174,38 @@ find_fd_struct (int fd)
   return elem_to_fd (e);
 }
 
-/* Free all of a thread's fd structs */
+/* Frees the file in an fd struct and removes the struct from 
+   its list. Does not free the struct. */
+static void
+free_fd_struct_file (struct fd_struct *fd_struct)
+{
+  list_remove (&fd_struct->elem);
+  lock_acquire (&thread_filesys_lock);
+  file_close (fd_struct->file);
+  lock_release (&thread_filesys_lock);
+}
+
+/* Free all of a thread's fd structs and their files. */
 void
-free_all_fd_structs (void)
-{ 
-  struct thread *cur = thread_current ();  
+close_all_files (void)
+{
+  struct thread *cur = thread_current ();
   struct list_elem *e;
-  for (e = list_begin (&cur->fd_list); e != list_end (&cur->fd_list);
-       e = list_next (e))
+  for (e = list_begin (&cur->fd_list); e != list_end (&cur->fd_list);)
     {
-      free_fd_struct (elem_to_fd (e));
+      struct fd_struct *fd_struct = elem_to_fd (e);
+      e = list_next (e);
+      free_fd_struct_file (fd_struct);
+      free (fd_struct);
     }
 }
 
-/* Handles incoming syscalls and dispatches the correct function */
+/* Handles incoming syscalls and dispatches the correct function. */
 static void
 syscall_handler (struct intr_frame *f UNUSED) 
 {
-  if (!validate_range (f->esp, 4 * sizeof (int))) {
-    printf ("INVALID SYSCALL ADDR\n");
+  if (!validate_range (f->esp, 4 * sizeof (int)))
     thread_exit ();
-  }
  
   enum syscall_no syscall_no = *(enum syscall_no *) f->esp;
   void *arg1 = f->esp + sizeof (int);
@@ -259,8 +256,6 @@ syscall_handler (struct intr_frame *f UNUSED)
         close (*(int *) arg1);
         break;
       default:
-        /* Not a valid syscall. */
-        printf ("INVALID SYSCALL NO\n");
         thread_exit ();
     }
 }
@@ -274,7 +269,6 @@ halt (void)
 NO_RETURN static void
 exit (int status)
 {
-  printf ("EXIT\n");
   struct thread *cur = thread_current ();  
   cur->wait->exit_status = status;
   thread_exit ();
@@ -283,7 +277,6 @@ exit (int status)
 static tid_t
 exec (const char *name)
 {
-  printf ("EXEC\n");
   if (!validate_name (name))
     thread_exit ();
 
@@ -293,14 +286,12 @@ exec (const char *name)
 static int
 wait (tid_t pid)
 {
-  printf ("WAIT\n");
   return process_wait (pid);
 }
 
 static bool
 create (const char *name, unsigned initial_size)
 {
-  printf ("CREATE\n");
   if (!validate_name (name))
     thread_exit ();
 
@@ -315,7 +306,6 @@ create (const char *name, unsigned initial_size)
 static bool
 remove (const char *name)
 {
-  printf ("REMOVE\n");
   if (!validate_name (name))
     thread_exit ();
 
@@ -330,31 +320,26 @@ remove (const char *name)
 static int
 open (const char *name)
 {
-  printf ("OPEN\n");
   if (!validate_name (name))
     thread_exit ();
 
   lock_acquire (&thread_filesys_lock);
   struct file *file = filesys_open (name);
   lock_release (&thread_filesys_lock);
-
   if (file == NULL)
-   {
     return -1;
-  }
 
   struct list *fd_list = &thread_current ()->fd_list;
   void *head = list_head (fd_list);
   struct list_elem *e = list_search_first (fd_list, fd_gap, head);
-  
-  struct fd_struct *fd_struct = palloc_get_page (0);//malloc (sizeof (struct fd_struct));
+  struct fd_struct *fd_struct = malloc (sizeof (struct fd_struct));
   if (fd_struct == NULL)
     {
       file_close (file);
       return -1;
     }
-  int fd;
 
+  int fd;
   if (list_prev (e) == head)
     fd = 2;
   else
@@ -364,15 +349,12 @@ open (const char *name)
   fd_struct->file = file;
   list_insert (e, &fd_struct->elem);
 
-  printf ("%p\n", file->inode);
-
   return fd;
 }
 
 static int
 filesize (int fd)
 {
-  printf ("FILESIZE\n");
   struct fd_struct *fd_struct = find_fd_struct (fd);
   if (fd_struct == NULL)
     return -1;
@@ -387,7 +369,6 @@ filesize (int fd)
 static int
 read (int fd, void *buffer, unsigned length)
 {
-  printf ("READ\n");
   if (!validate_range (buffer, length))
     thread_exit ();
 
@@ -409,13 +390,9 @@ read (int fd, void *buffer, unsigned length)
   if (fd_struct == NULL)
     return -1;
   
-  // printf ("BUFFER: %p\n", buffer);
-  // printf ("LENGTH: %u\n", length);
   int result;
   lock_acquire (&thread_filesys_lock);
-  // printf ("%p\n", fd_struct->file->inode);
   result = file_read (fd_struct->file, buffer, length);
-  printf ("\tREAD COMPLETE\n");
   lock_release (&thread_filesys_lock);
   
   return result;
@@ -424,7 +401,6 @@ read (int fd, void *buffer, unsigned length)
 static int
 write (int fd, const void *buffer, unsigned length)
 {
-  printf ("WRITE\n");
   if (!validate_range (buffer, length))
     thread_exit ();
 
@@ -452,7 +428,6 @@ write (int fd, const void *buffer, unsigned length)
 static void
 seek (int fd, unsigned position)
 {
-  printf ("SEEK\n");
   struct fd_struct *fd_struct = find_fd_struct (fd);
   if (fd_struct == NULL)
     return;
@@ -465,7 +440,6 @@ seek (int fd, unsigned position)
 static unsigned
 tell (int fd)
 {
-  printf ("TELL\n");
   struct fd_struct *fd_struct = find_fd_struct (fd);
   if (fd_struct == NULL)
     thread_exit ();
@@ -481,10 +455,10 @@ tell (int fd)
 static void
 close (int fd)
 {
-  printf ("CLOSE\n");
   struct fd_struct *fd_struct = find_fd_struct (fd);
   if (fd_struct == NULL)
     thread_exit ();
 
-  free_fd_struct (fd_struct);  
+  free_fd_struct_file (fd_struct);
+  free (fd_struct);
 }

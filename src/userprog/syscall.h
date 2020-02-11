@@ -4,5 +4,5 @@
 
 void syscall_init (void);
 
-void free_all_fd_structs (void);
+void close_all_files (void);
 #endif /* userprog/syscall.h */
