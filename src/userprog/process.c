@@ -21,12 +21,12 @@
 #include "threads/vaddr.h"
 
 struct process_args
-{
-  char *command;
-  struct wait_struct *wait;
-  struct semaphore process_loaded_sem;
-  bool success;
-};
+  {
+    char *command;
+    struct process_state *proc_state;
+    struct semaphore process_loaded_sem;
+    bool success;
+  };
 
 static thread_func start_process NO_RETURN;
 static bool load (const char *cmdline, void (**eip) (void), void **esp);
@@ -57,30 +57,30 @@ process_execute (const char *command)
   if (name_end != NULL)
     *name_end = '\0';
   
-  struct wait_struct *wait = malloc (sizeof (struct wait_struct));
-  if (wait == NULL)
+  struct process_state *proc_state = malloc (sizeof (struct process_state));
+  if (proc_state == NULL)
     return TID_ERROR;
-  sema_init (&wait->wait_sem, 0);
-  lock_init (&wait->status_lock);
-  wait->exit_status = -1; /* Changed on a proper exit */
-  wait->parent_dead = false;
-  wait->child_dead = false;
+  sema_init (&proc_state->wait_sem, 0);
+  lock_init (&proc_state->status_lock);
+  proc_state->exit_status = -1; /* Changed on a proper exit */
+  proc_state->parent_dead = false;
+  proc_state->child_dead = false;
 
   /* Get arguments to START_PROCESS */
   struct process_args process_args;
   process_args.command = cmd_copy;
-  process_args.wait = wait;
+  process_args.proc_state = proc_state;
   sema_init (&process_args.process_loaded_sem, 0);
 
   /* Create a new thread to execute FILE_NAME. */
-  lock_acquire (&wait->status_lock);
+  lock_acquire (&proc_state->status_lock);
   tid = thread_create (file_name, PRI_DEFAULT, start_process, &process_args);
 
   if (tid == TID_ERROR)
     {
       palloc_free_page (cmd_copy);
-      lock_release (&wait->status_lock);
-      free (wait);
+      lock_release (&proc_state->status_lock);
+      free (proc_state);
       return TID_ERROR;
     }
   
@@ -88,15 +88,15 @@ process_execute (const char *command)
   if (!process_args.success)
     {
       /* Trick child into deallocaitng its own wait struct */
-      wait->parent_dead = true;
+      proc_state->parent_dead = true;
       tid = TID_ERROR;
     }
   else
     {
-      list_push_back (&thread_current ()->child_list, &wait->elem);
+      list_push_back (&thread_current ()->child_list, &proc_state->elem);
     }  
   
-  lock_release (&wait->status_lock);
+  lock_release (&proc_state->status_lock);
   
   return tid;
 }
@@ -116,9 +116,9 @@ start_process (void *process_args)
   if_.cs = SEL_UCSEG;
   if_.eflags = FLAG_IF | FLAG_MBS;
   success = load (args->command, &if_.eip, &if_.esp);
-  thread_current ()->wait = args->wait;
+  thread_current ()->proc_state = args->proc_state;
   args->success = success;
-  args->wait->tid = thread_current ()->tid;
+  args->proc_state->tid = thread_current ()->tid;
   palloc_free_page (args->command);
   
   /* Must be done with args before PROCESS_EXECUTE may continue tp
@@ -153,31 +153,31 @@ process_wait (tid_t child_tid)
 {
   struct thread *cur = thread_current ();
   struct list_elem *e;
-  struct wait_struct *child_wait = NULL;
+  struct process_state *child_proc_state = NULL;
 
   for (e = list_begin (&cur->child_list); e != list_end (&cur->child_list);
        e = list_next (e))
     {
-      struct wait_struct *child_wait_entry = list_entry (e,
-                         struct wait_struct, elem);
-      if (child_wait_entry->tid == child_tid)
+      struct process_state *child_proc_state_e = list_entry (e,
+                         struct process_state, elem);
+      if (child_proc_state_e->tid == child_tid)
         {
-          child_wait = child_wait_entry;
+          child_proc_state = child_proc_state_e;
           break;
         }
     }
   
-  if (child_wait == NULL)
+  if (child_proc_state == NULL)
   {
     return -1;
   }
   
-  sema_down (&child_wait->wait_sem);
-  lock_acquire (&child_wait->status_lock);
-  lock_release (&child_wait->status_lock);
-  int exit_status = child_wait->exit_status;
-  list_remove (&child_wait->elem);
-  free (child_wait);
+  sema_down (&child_proc_state->wait_sem);
+  lock_acquire (&child_proc_state->status_lock);
+  lock_release (&child_proc_state->status_lock);
+  int exit_status = child_proc_state->exit_status;
+  list_remove (&child_proc_state->elem);
+  free (child_proc_state);
   
   return exit_status;
 }
@@ -214,39 +214,40 @@ process_exit (void)
   for (e = list_begin (&cur->child_list); e != list_end (&cur->child_list);
        e = list_next (e))
     {
-      struct wait_struct *child_wait = list_entry (e, struct wait_struct,
-                                                   elem);
-      lock_acquire (&child_wait->status_lock);
-      if (child_wait->child_dead)
+      struct process_state *child_proc_state = list_entry (e, 
+                                               struct process_state,
+                                               elem);
+      lock_acquire (&child_proc_state->status_lock);
+      if (child_proc_state->child_dead)
         {
-          lock_release (&child_wait->status_lock);
-          free (child_wait);
+          lock_release (&child_proc_state->status_lock);
+          free (child_proc_state);
         }
       else
         {
-          child_wait->parent_dead = true;
-          lock_release (&child_wait->status_lock);
+          child_proc_state->parent_dead = true;
+          lock_release (&child_proc_state->status_lock);
         }
     }
 
-  if (cur->wait == NULL) 
+  if (cur->proc_state == NULL) 
   {
     /* Thread is not a process */
     return;
   }
 
-  printf ("%s: exit(%d)\n", cur->name, cur->wait->exit_status);
-  lock_acquire (&cur->wait->status_lock);
-  if (cur->wait->parent_dead)
+  printf ("%s: exit(%d)\n", cur->name, cur->proc_state->exit_status);
+  lock_acquire (&cur->proc_state->status_lock);
+  if (cur->proc_state->parent_dead)
     {
-      lock_release (&cur->wait->status_lock);
-      free (cur->wait);
+      lock_release (&cur->proc_state->status_lock);
+      free (cur->proc_state);
     }
   else
     {
-      sema_up (&cur->wait->wait_sem);
-      cur->wait->child_dead = true;
-      lock_release (&cur->wait->status_lock);
+      sema_up (&cur->proc_state->wait_sem);
+      cur->proc_state->child_dead = true;
+      lock_release (&cur->proc_state->status_lock);
     }  
 }
 

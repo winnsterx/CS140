@@ -3,7 +3,7 @@
 
 #include "threads/thread.h"
 
-struct wait_struct
+struct process_state
   {
     tid_t tid;
     bool child_dead;

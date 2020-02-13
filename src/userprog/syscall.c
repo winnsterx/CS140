@@ -270,7 +270,7 @@ NO_RETURN static void
 exit (int status)
 {
   struct thread *cur = thread_current ();  
-  cur->wait->exit_status = status;
+  cur->proc_state->exit_status = status;
   thread_exit ();
 }
 

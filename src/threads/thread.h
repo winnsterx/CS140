@@ -99,10 +99,10 @@ struct thread
 #ifdef USERPROG
     /* Owned by userprog/process.c. */
     uint32_t *pagedir;                  /* Page directory. */
-    struct wait_struct *wait;
-    struct list child_list;
-    struct list fd_list;
-    struct file *exec_file;
+    struct process_state *proc_state;   /* Keeps relevant process state */
+    struct list child_list;             /* List of children's state structs */
+    struct list fd_list;                /* List of fd_structs */
+    struct file *exec_file;             /* Currnently executing file */
 #endif
 
     /* Owned by thread.c. */
