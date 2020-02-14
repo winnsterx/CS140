@@ -130,7 +130,7 @@ validate_name (const char *name)
 
 /* Converts a list element pointer to its corresponding
    struct pointer */
-static struct fd_struct *
+static inline struct fd_struct *
 elem_to_fd (const struct list_elem *e)
 {
    return list_entry (e, struct fd_struct, elem);

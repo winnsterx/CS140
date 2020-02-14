@@ -146,7 +146,7 @@ start_process (void *process_args)
 }
 
 /* Converts an element to a STRUCT PROCESS_STATE pointer. */
-static struct process_state *
+static inline struct process_state *
 elem_to_proc_state (const struct list_elem *e)
 {
   return list_entry (e, struct process_state, elem);
