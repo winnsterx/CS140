@@ -60,11 +60,11 @@ process_execute (const char *command)
   struct process_state *proc_state = malloc (sizeof (struct process_state));
   if (proc_state == NULL)
     return TID_ERROR;
+  
   sema_init (&proc_state->wait_sem, 0);
-  lock_init (&proc_state->status_lock);
   proc_state->exit_status = -1; /* Changed on a proper exit */
-  proc_state->parent_dead = false;
-  proc_state->child_dead = false;
+  proc_state->parent_alive = true;
+  proc_state->child_alive = true;
 
   /* Get arguments to START_PROCESS */
   struct process_args process_args;
@@ -73,7 +73,6 @@ process_execute (const char *command)
   sema_init (&process_args.process_loaded_sem, 0);
 
   /* Create a new thread to execute FILE_NAME. */
-  lock_acquire (&proc_state->status_lock);
   tid = thread_create (file_name, PRI_DEFAULT, start_process, &process_args);
 
   if (tid == TID_ERROR)
@@ -87,16 +86,24 @@ process_execute (const char *command)
   sema_down (&process_args.process_loaded_sem); 
   if (!process_args.success)
     {
-      /* Trick child into deallocaitng its own wait struct */
-      proc_state->parent_dead = true;
+      /* Free child if it has already marked itself as dead. Let it
+         free itself otherwise by marking its parent as dead. */
+      if (!__atomic_compare_exchange_n (&proc_state->parent_alive,
+                                       &proc_state->child_alive,
+                                       false,
+                                       false,
+                                       __ATOMIC_RELAXED,
+                                       __ATOMIC_RELAXED))
+        {
+          free (proc_state);
+        }
+
       tid = TID_ERROR;
     }
   else
     {
       list_push_back (&thread_current ()->child_list, &proc_state->elem);
-    }  
-  
-  lock_release (&proc_state->status_lock);
+    }
   
   return tid;
 }
@@ -144,10 +151,7 @@ start_process (void *process_args)
    exception), returns -1.  If TID is invalid or if it was not a
    child of the calling process, or if process_wait() has already
    been successfully called for the given TID, returns -1
-   immediately, without waiting.
-
-   This function will be implemented in problem 2-2.  For now, it
-   does nothing. */
+   immediately, without waiting. */
 int
 process_wait (tid_t child_tid) 
 {
@@ -173,8 +177,6 @@ process_wait (tid_t child_tid)
   }
   
   sema_down (&child_proc_state->wait_sem);
-  lock_acquire (&child_proc_state->status_lock);
-  lock_release (&child_proc_state->status_lock);
   int exit_status = child_proc_state->exit_status;
   list_remove (&child_proc_state->elem);
   free (child_proc_state);
@@ -216,18 +218,17 @@ process_exit (void)
     {
       struct process_state *child_proc_state = list_entry (e, 
                                                struct process_state,
-                                               elem);
-      lock_acquire (&child_proc_state->status_lock);
-      if (child_proc_state->child_dead)
+                                               elem);      
+      if (!__atomic_compare_exchange_n (&child_proc_state->parent_alive,
+                                        &child_proc_state->child_alive,
+                                        false,
+                                        false,
+                                        __ATOMIC_RELAXED,
+                                        __ATOMIC_RELAXED))
         {
-          lock_release (&child_proc_state->status_lock);
           free (child_proc_state);
         }
-      else
-        {
-          child_proc_state->parent_dead = true;
-          lock_release (&child_proc_state->status_lock);
-        }
+          
     }
 
   if (cur->proc_state == NULL) 
@@ -237,18 +238,18 @@ process_exit (void)
   }
 
   printf ("%s: exit(%d)\n", cur->name, cur->proc_state->exit_status);
-  lock_acquire (&cur->proc_state->status_lock);
-  if (cur->proc_state->parent_dead)
+  
+  if (!__atomic_compare_exchange_n (&cur->proc_state->child_alive, 
+                                    &cur->proc_state->parent_alive,
+                                    false,
+                                    false,
+                                    __ATOMIC_RELAXED,
+                                    __ATOMIC_RELAXED))
     {
-      lock_release (&cur->proc_state->status_lock);
       free (cur->proc_state);
     }
-  else
-    {
-      sema_up (&cur->proc_state->wait_sem);
-      cur->proc_state->child_dead = true;
-      lock_release (&cur->proc_state->status_lock);
-    }  
+  else 
+    sema_up (&cur->proc_state->wait_sem);
 }
 
 /* Sets up the CPU for running user code in the current

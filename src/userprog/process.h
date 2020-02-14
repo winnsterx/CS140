@@ -6,8 +6,8 @@
 struct process_state
   {
     tid_t tid;
-    bool child_dead;
-    bool parent_dead;
+    bool child_alive;
+    bool parent_alive;
     struct list_elem elem;
     struct semaphore wait_sem;
     struct lock status_lock;
