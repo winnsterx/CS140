@@ -30,7 +30,9 @@ static void busy_wait (int64_t loops);
 static void real_time_sleep (int64_t num, int32_t denom);
 static void real_time_delay (int64_t num, int32_t denom);
 static struct list timer_sleep_queue;
-
+static bool wake_time_comp (const struct list_elem *a, 
+                            const struct list_elem *b, 
+                            void *aux UNUSED);
 /* Sets up the timer to interrupt TIMER_FREQ times per second,
    and registers the corresponding interrupt. */
 void
@@ -86,43 +88,22 @@ timer_elapsed (int64_t then)
   return timer_ticks () - then;
 }
 
-/* Sleeps for approximately TICKS timer ticks.  Interrupts must
-   be turned on. */
+/* Sleeps for approximately TICKS timer ticks. */
 void
 timer_sleep (int64_t ticks) 
 {
-  if (ticks < 1) return;
-  
+  if (ticks < 1) 
+    return;
   
   struct thread *t = thread_current ();
   t->blocked_until = timer_ticks () + ticks;
   
   enum intr_level old_state = intr_disable ();
   list_insert_ordered (&timer_sleep_queue, &t->elem, 
-    timer_wake_time_comp, NULL); 
-  thread_block ();
-  intr_set_level (old_state);
+                       wake_time_comp, NULL); 
 
-  /*// Winnie's implentation
-  //printf("In timer_sleep with ticks = %" PRId64 "\n", ticks);
-  if (ticks < 1) return;
-
-  //int64_t start = timer_ticks ();
-  ASSERT (intr_get_level () == INTR_ON); // interrupts is turned on 
-  enum intr_level prev = intr_disable (); // disables interrupts
-
-  struct thread *cur = thread_current ();
-  cur->blocked = ticks;
-
-  // intr_level must be OFF for thread_block
-  thread_block(); // puts current thread to sleep
-  intr_set_level (prev);*/
-}
-
-bool timer_wake_time_comp (const struct list_elem *a, const struct list_elem *b, void *aux UNUSED)
-{
-  return list_entry (a, struct thread, elem)->blocked_until < 
-         list_entry (b, struct thread, elem)->blocked_until;
+  thread_block (); 
+  intr_set_level (old_state); 
 }
 
 /* Sleeps for approximately MS milliseconds.  Interrupts must be
@@ -201,19 +182,17 @@ timer_interrupt (struct intr_frame *args UNUSED)
 {
   ticks++;
  
-  // queue implementation
   while (!list_empty (&timer_sleep_queue))
-  {
-    struct list_elem *e = list_front (&timer_sleep_queue);
-    struct thread *t = list_entry (e, struct thread, elem);
-    if (t->blocked_until > ticks)
-      break;
-    list_pop_front (&timer_sleep_queue);
-    thread_unblock (t);
-  }
+    {
+      struct list_elem *e = list_front (&timer_sleep_queue);
+      struct thread *t = list_entry (e, struct thread, elem);
+      if (t->blocked_until > ticks)
+        break;
+      list_pop_front (&timer_sleep_queue);
+      thread_unblock (t);
+    }
     
   thread_tick ();
-  // thread_foreach(thread_blocked_check, NULL);
 }
 
 /* Returns true if LOOPS iterations waits for more than one timer
@@ -286,3 +265,14 @@ real_time_delay (int64_t num, int32_t denom)
   ASSERT (denom % 1000 == 0);
   busy_wait (loops_per_tick * num / 1000 * TIMER_FREQ / (denom / 1000)); 
 }
+
+/* Returns true if A's wake timer is earlier than B's wake time. */
+static bool 
+wake_time_comp (const struct list_elem *a, 
+                      const struct list_elem *b, 
+                      void *aux UNUSED)
+{
+  return list_entry (a, struct thread, elem)->blocked_until < 
+         list_entry (b, struct thread, elem)->blocked_until;
+}
+

@@ -89,16 +89,14 @@ struct thread
     char name[16];                      /* Name (for debugging purposes). */
     uint8_t *stack;                     /* Saved stack pointer. */
     int priority;                       /* Priority. */
-    int nice;
-    fixedpt_t recent_cpu;
-    struct list_elem allelem;           /* List element for all threads list. */
+    int nice;                           /* Thread's nice value for mlfqs */
+    fixedpt_t recent_cpu;               /* Thread's recent CPU for mlfqs */
+    struct list_elem allelem;           /* List elem for all threads list. */
+    struct list_elem cpuelem;           /* List elem for CPU changed list */
+    bool on_cpu_list;                   /* Recent CPU has recently changed */
 
     /* Shared between thread.c and synch.c. */
     struct list_elem elem;              /* List element. */
-
-    // FIX COMMENT
-    struct list_elem cpuelem;
-    bool on_cpu_list;
 
 #ifdef USERPROG
     /* Owned by userprog/process.c. */
