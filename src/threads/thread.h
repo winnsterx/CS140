@@ -1,6 +1,7 @@
 #ifndef THREADS_THREAD_H
 #define THREADS_THREAD_H
 
+#include "threads/fixed-point.h"
 #include <debug.h>
 #include <list.h>
 #include <stdint.h>
@@ -87,7 +88,11 @@ struct thread
     enum thread_status status;          /* Thread state. */
     uint8_t *stack;                     /* Saved stack pointer. */
     int priority;                       /* Priority. */
-    struct list_elem allelem;           /* List element for all threads list. */
+    int nice;                           /* Thread's nice value for mlfqs */
+    fixedpt_t recent_cpu;               /* Thread's recent CPU for mlfqs */
+    struct list_elem allelem;           /* List elem for all threads list. */
+    struct list_elem cpuelem;           /* List elem for CPU changed list */
+    bool on_cpu_list;                   /* Recent CPU has recently changed */
 
     /* Shared between thread.c and synch.c. */
     struct list_elem elem;              /* List element. */
@@ -107,6 +112,9 @@ struct thread
 
     /* Owned by thread.c. */
     unsigned magic;                     /* Detects stack overflow. */
+
+    /* Time (ticks since OS boot) at which thread should wake  */
+    int64_t blocked_until; 
   };
 
 /* If false (default), use round-robin scheduler.
@@ -141,6 +149,7 @@ void thread_foreach (thread_action_func *, void *);
 
 int thread_get_priority (void);
 void thread_set_priority (int);
+void thread_update_priority (struct thread *, void *);
 
 int thread_get_nice (void);
 void thread_set_nice (int);
