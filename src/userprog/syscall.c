@@ -28,6 +28,17 @@ static void seek (int fd, unsigned position);
 static unsigned tell (int fd);
 static void close (int fd);
 
+static int get_user_byte (const uint8_t *);
+static unsigned overflow_adjusted_size (const uint8_t *, unsigned);
+static uint8_t *first_invalid_uaddr (const uint8_t *, unsigned);
+static bool validate_range (const uint8_t *, unsigned);
+static bool validate_name (const char *);
+static struct fd_struct *elem_to_fd (const struct list_elem *);
+static bool fd_gap (const struct list_elem *, void *);
+static bool fd_geq (const struct list_elem *, void *);
+static struct fd_struct *find_fd_struct (int);
+static void free_fd_struct_file (struct fd_struct *);
+
 struct fd_struct
   {
     int fd;
@@ -39,150 +50,6 @@ void
 syscall_init (void) 
 {
   intr_register_int (0x30, 3, INTR_ON, syscall_handler, "syscall");
-}
-
-/* Dereferences a byte at addres UADDR. Returns -1 if the address is
-   unmapped or invalid, otherwise returns the byte held by the address.
-   This function assumes UADDR < PHYS_BASE. */
-static int
-get_user_byte (const uint8_t *uaddr)
-{
-  int result;
-  asm ("movl $1f, %0; movzbl %1, %0; 1:"
-       : "=&a" (result) : "m" (*uaddr));
-
-  return result;
-}
-
-/* Checks whether adding SIZE to UADDR would overflow UADDR. If not, size
-   is returned. Otherwize, the largest possible size without overflow
-   is returned. */
-static unsigned overflow_adjusted_size (const uint8_t *uaddr, unsigned size)
-{
-  if (uaddr + size < uaddr)
-    return UINT_MAX - (unsigned) uaddr;
-
-  else
-    return size;
-}
-
-/* In a range of user addresses starting at UADDR, this returns the first
-   invalid user address, or the first address beyond the specified range, 
-   whichever comes first. Returns UADDR if the UADDR is invalid. */
-static uint8_t *
-first_invalid_uaddr (const uint8_t *uaddr, unsigned size)
-{
-  if (uaddr == NULL || size == 0)
-    return (uint8_t *) uaddr;
- 
-  size = overflow_adjusted_size (uaddr, size);
-
-  uint8_t *pg_ptr = pg_round_down (uaddr);
-  uint8_t *first_pg_ptr = pg_ptr;
-  while (pg_ptr < uaddr + size)
-    {
-      if (is_kernel_vaddr (pg_ptr) || get_user_byte (pg_ptr) == -1)
-        {
-          if (pg_ptr == first_pg_ptr)
-            return (uint8_t *) uaddr;
-          
-          break;
-        }
-      pg_ptr += PGSIZE;
-    }
-
-  return pg_ptr;
-}
-
-/* Returns true if and only if UADDR and SIZE descripe an non-empty
-   range, where every user address contained is valid */
-static bool
-validate_range (const uint8_t *uaddr, unsigned size)
-{
-  if (size != overflow_adjusted_size (uaddr, size))
-    return false;
- 
-  uint8_t *ptr = first_invalid_uaddr (uaddr, size);
-
-  return ptr >= uaddr + size;
-}
-
-/* Ensures a name is less than a page long, and lives in 
-   valid user memory */
-static bool 
-validate_name (const char *name)
-{
-  char* highest = (char*) first_invalid_uaddr ((uint8_t *) name, PGSIZE);
-  if (highest == name)
-    return false;
-  
-  unsigned max = highest - name;
-  max = max > PGSIZE ? PGSIZE : max;
-
-  for (unsigned i = 0; i < max; i++)
-    {
-      if (name[i] == '\0')
-        return true;
-    }
-  
-  return false;
-}
-
-/* Converts a list element pointer to its corresponding
-   struct pointer */
-static inline struct fd_struct *
-elem_to_fd (const struct list_elem *e)
-{
-   return list_entry (e, struct fd_struct, elem);
-}
-
-/* Returns true if there is a gap between the current
-   and previous fds in the list */
-static bool 
-fd_gap (const struct list_elem *cur, void *aux)
-{
-  struct list_elem *fd_list_head = (struct list_elem *) aux;
-  struct list_elem *prev = list_prev ((struct list_elem *) cur);
-  if (prev == fd_list_head)
-    return elem_to_fd (cur)->fd > 2;
-
-  return (elem_to_fd (cur)->fd > elem_to_fd (prev)->fd + 1);
-}
-
-/* Returns if the passed elements fd is greater than
-   or equal to the fd passed into aux. */
-static bool 
-fd_geq (const struct list_elem *cur, void *aux)
-{
-  int fd = (int) aux;
-  return elem_to_fd (cur)->fd >= fd;
-}
-
-/* Searches for struct of corresponding fd. Returns NULL if it is not
-   present */
-static struct fd_struct *
-find_fd_struct (int fd)
-{  
-  struct thread *cur = thread_current ();
-  struct list_elem *e = list_search_first (&cur->fd_list,
-                                           fd_geq, (void *) fd);
-
-  if (e ==list_end (&cur->fd_list))
-  if (e == list_end (&cur->fd_list) || elem_to_fd (e)->fd != fd)
-    return NULL;
-
-  return elem_to_fd (e);
-}
-
-/* Frees the file in an fd struct and removes the struct from 
-   its list. Does not free the struct. */
-static void
-free_fd_struct_file (struct fd_struct *fd_struct)
-{
-  list_remove (&fd_struct->elem);
-  lock_acquire (&thread_filesys_lock);
-  file_close (fd_struct->file);
-  lock_release (&thread_filesys_lock);
 }
 
 /* Free all of a thread's fd structs and their files. */
@@ -462,3 +329,148 @@ close (int fd)
   free_fd_struct_file (fd_struct);
   free (fd_struct);
 }
+
+/* Dereferences a byte at addres UADDR. Returns -1 if the address is
+   unmapped or invalid, otherwise returns the byte held by the address.
+   This function assumes UADDR < PHYS_BASE. */
+static int
+get_user_byte (const uint8_t *uaddr)
+{
+  int result;
+  asm ("movl $1f, %0; movzbl %1, %0; 1:"
+       : "=&a" (result) : "m" (*uaddr));
+
+  return result;
+}
+
+/* Checks whether adding SIZE to UADDR would overflow UADDR. If not, size
+   is returned. Otherwize, the largest possible size without overflow
+   is returned. */
+static unsigned overflow_adjusted_size (const uint8_t *uaddr, unsigned size)
+{
+  if (uaddr + size < uaddr)
+    return UINT_MAX - (unsigned) uaddr;
+
+  else
+    return size;
+}
+
+/* In a range of user addresses starting at UADDR, this returns the first
+   invalid user address, or the first address beyond the specified range, 
+   whichever comes first. Returns UADDR if the UADDR is invalid. */
+static uint8_t *
+first_invalid_uaddr (const uint8_t *uaddr, unsigned size)
+{
+  if (uaddr == NULL || size == 0)
+    return (uint8_t *) uaddr;
+ 
+  size = overflow_adjusted_size (uaddr, size);
+
+  uint8_t *pg_ptr = pg_round_down (uaddr);
+  uint8_t *first_pg_ptr = pg_ptr;
+  while (pg_ptr < uaddr + size)
+    {
+      if (is_kernel_vaddr (pg_ptr) || get_user_byte (pg_ptr) == -1)
+        {
+          if (pg_ptr == first_pg_ptr)
+            return (uint8_t *) uaddr;
+          
+          break;
+        }
+      pg_ptr += PGSIZE;
+    }
+
+  return pg_ptr;
+}
+
+/* Returns true if and only if UADDR and SIZE descripe an non-empty
+   range, where every user address contained is valid */
+static bool
+validate_range (const uint8_t *uaddr, unsigned size)
+{
+  if (size != overflow_adjusted_size (uaddr, size))
+    return false;
+ 
+  uint8_t *ptr = first_invalid_uaddr (uaddr, size);
+
+  return ptr >= uaddr + size;
+}
+
+/* Ensures a name is less than a page long, and lives in 
+   valid user memory */
+static bool 
+validate_name (const char *name)
+{
+  char* highest = (char*) first_invalid_uaddr ((uint8_t *) name, PGSIZE);
+  if (highest == name)
+    return false;
+  
+  unsigned max = highest - name;
+  max = max > PGSIZE ? PGSIZE : max;
+
+  for (unsigned i = 0; i < max; i++)
+    {
+      if (name[i] == '\0')
+        return true;
+    }
+  
+  return false;
+}
+
+/* Converts a list element pointer to its corresponding
+   struct pointer */
+static inline struct fd_struct *
+elem_to_fd (const struct list_elem *e)
+{
+   return list_entry (e, struct fd_struct, elem);
+}
+
+/* Returns true if there is a gap between the current
+   and previous fds in the list */
+static bool 
+fd_gap (const struct list_elem *cur, void *aux)
+{
+  struct list_elem *fd_list_head = (struct list_elem *) aux;
+  struct list_elem *prev = list_prev ((struct list_elem *) cur);
+  if (prev == fd_list_head)
+    return elem_to_fd (cur)->fd > 2;
+
+  return (elem_to_fd (cur)->fd > elem_to_fd (prev)->fd + 1);
+}
+
+/* Returns if the passed elements fd is greater than
+   or equal to the fd passed into aux. */
+static bool 
+fd_geq (const struct list_elem *cur, void *aux)
+{
+  int fd = (int) aux;
+  return elem_to_fd (cur)->fd >= fd;
+}
+
+/* Searches for struct of corresponding fd. Returns NULL if it is not
+   present */
+static struct fd_struct *
+find_fd_struct (int fd)
+{  
+  struct thread *cur = thread_current ();
+  struct list_elem *e = list_search_first (&cur->fd_list,
+                                           fd_geq, (void *) fd);
+
+  if (e ==list_end (&cur->fd_list))
+  if (e == list_end (&cur->fd_list) || elem_to_fd (e)->fd != fd)
+    return NULL;
+
+  return elem_to_fd (e);
+}
+
+/* Frees the file in an fd struct and removes the struct from 
+   its list. Does not free the struct. */
+static void
+free_fd_struct_file (struct fd_struct *fd_struct)
+{
+  list_remove (&fd_struct->elem);
+  lock_acquire (&thread_filesys_lock);
+  file_close (fd_struct->file);
+  lock_release (&thread_filesys_lock);
+}
+
