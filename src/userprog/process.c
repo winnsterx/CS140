@@ -89,15 +89,14 @@ process_execute (const char *command)
       /* Free child if it has already marked itself as dead. Let it
          free itself otherwise by marking its parent as dead. */
       if (!__atomic_compare_exchange_n (&proc_state->parent_alive,
-                                       &proc_state->child_alive,
-                                       false,
-                                       false,
-                                       __ATOMIC_RELAXED,
-                                       __ATOMIC_RELAXED))
+                                        &proc_state->child_alive,
+                                        false,
+                                        false,
+                                        __ATOMIC_RELAXED,
+                                        __ATOMIC_RELAXED))
         {
           free (proc_state);
         }
-
       tid = TID_ERROR;
     }
   else
@@ -146,6 +145,21 @@ start_process (void *process_args)
   NOT_REACHED ();
 }
 
+/* Converts an element to a STRUCT PROCESS_STATE pointer. */
+static struct process_state *
+elem_to_proc_state (const struct list_elem *e)
+{
+  return list_entry (e, struct process_state, elem);
+}
+
+/* Returns TRUE if the PROCESS_STATE associated with a LIST_ELEM E
+   has a tid equal to that passed into AUX */
+static bool 
+tid_matches (const struct list_elem *e, void *aux)
+{
+  return elem_to_proc_state (e)->tid == (tid_t) aux;
+}
+
 /* Waits for thread TID to die and returns its exit status.  If
    it was terminated by the kernel (i.e. killed due to an
    exception), returns -1.  If TID is invalid or if it was not a
@@ -157,25 +171,13 @@ process_wait (tid_t child_tid)
 {
   struct thread *cur = thread_current ();
   struct list_elem *e;
-  struct process_state *child_proc_state = NULL;
+  struct process_state *child_proc_state;
 
-  for (e = list_begin (&cur->child_list); e != list_end (&cur->child_list);
-       e = list_next (e))
-    {
-      struct process_state *child_proc_state_e = list_entry (e,
-                         struct process_state, elem);
-      if (child_proc_state_e->tid == child_tid)
-        {
-          child_proc_state = child_proc_state_e;
-          break;
-        }
-    }
-  
-  if (child_proc_state == NULL)
-  {
+  e = list_search_first (&cur->child_list, tid_matches, (void *) child_tid);
+  if (e == list_end (&cur->child_list))
     return -1;
-  }
   
+  child_proc_state = elem_to_proc_state (e);
   sema_down (&child_proc_state->wait_sem);
   int exit_status = child_proc_state->exit_status;
   list_remove (&child_proc_state->elem);
@@ -216,9 +218,7 @@ process_exit (void)
   for (e = list_begin (&cur->child_list); e != list_end (&cur->child_list);
        e = list_next (e))
     {
-      struct process_state *child_proc_state = list_entry (e, 
-                                               struct process_state,
-                                               elem);      
+      struct process_state *child_proc_state = elem_to_proc_state (e);      
       if (!__atomic_compare_exchange_n (&child_proc_state->parent_alive,
                                         &child_proc_state->child_alive,
                                         false,
@@ -238,7 +238,6 @@ process_exit (void)
   }
 
   printf ("%s: exit(%d)\n", cur->name, cur->proc_state->exit_status);
-  
   if (!__atomic_compare_exchange_n (&cur->proc_state->child_alive, 
                                     &cur->proc_state->parent_alive,
                                     false,
