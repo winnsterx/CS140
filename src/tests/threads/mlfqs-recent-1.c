@@ -113,7 +113,7 @@ test_mlfqs_recent_1 (void)
   int last_elapsed = 0;
   
   ASSERT (thread_mlfqs);
-
+  printf("Thread name: %s\n", thread_current ()->name);
   do 
     {
       msg ("Sleeping 10 seconds to allow recent_cpu to decay, please wait...");

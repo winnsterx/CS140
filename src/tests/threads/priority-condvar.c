@@ -22,9 +22,9 @@ test_priority_condvar (void)
   ASSERT (!thread_mlfqs);
 
   lock_init (&lock);
-  cond_init (&condition);
-
+  cond_init (&condition);;
   thread_set_priority (PRI_MIN);
+
   for (i = 0; i < 10; i++) 
     {
       int priority = PRI_DEFAULT - (i + 7) % 10 - 1;
