@@ -88,33 +88,34 @@ struct thread
     enum thread_status status;          /* Thread state. */
     uint8_t *stack;                     /* Saved stack pointer. */
     int priority;                       /* Priority. */
-    int nice;                           /* Thread's nice value for mlfqs */
-    fixedpt_t recent_cpu;               /* Thread's recent CPU for mlfqs */
+    int nice;                           /* Thread's nice value for mlfqs. */
+    fixedpt_t recent_cpu;               /* Thread's recent CPU for mlfqs. */
     struct list_elem allelem;           /* List elem for all threads list. */
-    struct list_elem cpuelem;           /* List elem for CPU changed list */
-    bool on_cpu_list;                   /* Recent CPU has recently changed */
+    struct list_elem cpuelem;           /* List elem for CPU changed list. */
+    bool on_cpu_list;                   /* Recent CPU has recently changed. */
+
+    /* Owned by synch.c. */
+    int64_t blocked_until;              /* OS tick when thread should wake. */
+    
+#ifdef USERPROG
+    /* Owned by userprog/process.c. */
+    uint32_t *pagedir;                  /* Page directory. */
+    struct process_state *proc_state;   /* Keeps relevant process state. */
+    struct list child_list;             /* List of children's state structs. */
+    struct list fd_list;                /* List of fd_structs. */
+    struct file *exec_file;             /* Currently executing file. */
+#endif
 
     /* Shared between thread.c and synch.c. */
     struct list_elem elem;              /* List element. */
 
     /* Shared between thread.c and process.c */
-    tid_t tid;                          /* Thread and process identifier */
-    char name[16];                      /* Name of process or to debug */
-
-#ifdef USERPROG
-    /* Owned by userprog/process.c. */
-    uint32_t *pagedir;                  /* Page directory. */
-    struct process_state *proc_state;   /* Keeps relevant process state */
-    struct list child_list;             /* List of children's state structs */
-    struct list fd_list;                /* List of fd_structs */
-    struct file *exec_file;             /* Currnently executing file */
-#endif
-
+    tid_t tid;                          /* Thread and process identifier. */
+    char name[16];                      /* Name of process or to debug. */
+    
     /* Owned by thread.c. */
     unsigned magic;                     /* Detects stack overflow. */
 
-    /* Time (ticks since OS boot) at which thread should wake  */
-    int64_t blocked_until; 
   };
 
 /* If false (default), use round-robin scheduler.
