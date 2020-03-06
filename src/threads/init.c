@@ -34,7 +34,6 @@
 #ifdef FILESYS
 #include "devices/block.h"
 #include "devices/ide.h"
-#include "filesys/cache.h"
 #include "filesys/filesys.h"
 #include "filesys/fsutil.h"
 #endif

@@ -2,23 +2,36 @@
 #include <debug.h>
 #include <string.h>
 #include "devices/block.h"
+#include "devices/timer.h"
 #include "filesys/filesys.h"
 #include "lib/kernel/bitmap.h"
 #include "lib/kernel/hash.h"
 #include "threads/synch.h"
-// WAIT, WE DONT REALLY NEED AN EVICT LIST. WE'RE LITERALLY USING AN ARRAY
-// KEEP AROUND FOR NOW IN CASE APPROACH GETS ROASTED
+#include "threads/thread.h"
+
 #define NUM_CACHE_SECTORS 64
 
-/* Is it better to preallocate all pages? Ask, want 100% */
 struct list cache_free_list;
 struct list cache_evict_list;
 struct hash cache_hash;
+
+/* Used for hash searches without allocating an entire
+   cache_entry. Must have same offset between SECTOR and
+   ELEM as a cache_entry. */
+struct cache_entry_stub
+  {
+    unsigned sector;
+    struct hash_elem elem;
+  };
+
 struct cache_entry
   {
     unsigned sector;
-    struct hash_elem hash_elem;
-    struct list_elem list_elem;
+    union
+      {
+        struct hash_elem hash_elem;
+        struct list_elem list_elem;
+      };
     struct lock lock;
     bool accessed;
     bool dirty;
@@ -26,25 +39,21 @@ struct cache_entry
     uint8_t data[BLOCK_SECTOR_SIZE];
   };
 
-/* Used for hash searches without allocating an entire
-   CACHE_ENTRY. Must have same offset between SECTOR and
-   ELEM as CACHE_ENTRY. */
-struct cache_entry_stub
-  {
-    unsigned sector;
-    struct hash_elem elem;
-  };
-
 static struct cache_entry cache_entries[NUM_CACHE_SECTORS];
 static struct lock cache_lock;
-static struct list_elem *cur_cache_elem;
+static unsigned cur_index;
+static bool done;
 
 static void cache_flush (void);
+static void cache_flush_loop (void *);
 static struct cache_entry *cache_get_entry (unsigned);
 static unsigned cache_hash_func (const struct hash_elem *, void *);
 static bool cache_less_func (const struct hash_elem *, 
-                             const struct hash_elem *, void *) ;
+                             const struct hash_elem *, void *);
 
+/* Sets up initial list of free cache_entries, allocates CACHE_HASH. 
+   Initializes CACHE_LOCK, launches thread that periodically flushes
+   cache. */
 void 
 cache_init (void)
 {
@@ -55,16 +64,16 @@ cache_init (void)
   ASSERT (success);
   lock_init (&cache_lock);
   list_init (&cache_free_list);
-  list_init (&cache_evict_list);
-  cur_cache_elem = list_end (&cache_evict_list);
+  cur_index = 0;
   for (unsigned i = 0; i < NUM_CACHE_SECTORS; i++)
-   {
-    struct cache_entry *ce = &cache_entries[i];
-    lock_init (&ce->lock);
-    list_push_back (&cache_free_list, &ce->list_elem);
-   }
+    {
+      struct cache_entry *ce = &cache_entries[i];
+      lock_init (&ce->lock);
+      list_push_back (&cache_free_list, &ce->list_elem);
+    }
 
- // thread_start (cache_write_back_loop ());
+  done = false;
+  thread_create ("cache_loop", PRI_DEFAULT, cache_flush_loop, (void *) &done);
 }
 
 /* Writes dirty sectors and frees all resources. */
@@ -72,11 +81,16 @@ void
 cache_destroy (void)
 {
   cache_flush ();
+  done = true;
   hash_destroy (&cache_hash, NULL);
 } 
 
+/* If the SECTOR is not present in the cache, SECTOR is read into the cache.
+   SIZE bytes from OFFSET in the cache slot are copied into BUFFER. The
+   cache slot is marked as accessed. */
 void 
-cache_sector_read (unsigned sector, void *buffer, unsigned size, unsigned offset)
+cache_sector_read (unsigned sector, void *buffer,
+                   unsigned size, unsigned offset)
 {
   ASSERT (offset + size <= BLOCK_SECTOR_SIZE);
   struct cache_entry *ce = cache_get_entry (sector);
@@ -85,8 +99,12 @@ cache_sector_read (unsigned sector, void *buffer, unsigned size, unsigned offset
   lock_release (&ce->lock);
 }
 
+/* If the SECTOR is not present in the cache, SECTOR is read into the cache.
+   SIZE bytes from BUFFER are copied into OFFSET bytes into the cache_entry.
+   The cache_entry is marked as accessed and dirty. */
 void 
-cache_sector_write (unsigned sector, void *buffer, unsigned size, unsigned offset)
+cache_sector_write (unsigned sector, void *buffer,
+                    unsigned size, unsigned offset)
 {
   ASSERT (offset + size <= BLOCK_SECTOR_SIZE);
   struct cache_entry *ce = cache_get_entry (sector);
@@ -96,6 +114,8 @@ cache_sector_write (unsigned sector, void *buffer, unsigned size, unsigned offse
   lock_release (&ce->lock);
 }
 
+/* Returns a pointer to the cache_entry assigned to SECTOR, if present.
+   Otherwise returns NULL. */
 static struct cache_entry *
 cache_lookup (unsigned sector)
 {
@@ -109,24 +129,18 @@ cache_lookup (unsigned sector)
   return hash_entry (e, struct cache_entry, hash_elem);
 }
 
+/* Uses clock algorithm to select a cache_entry for eviction, removes
+   the entry from CACHE_HASH (signifies not present in cache). */
 static struct cache_entry *
 cache_evict (void)
 {
-  ASSERT (lock_held_by_current_thread (&cache_lock));
-  if (cur_cache_elem == list_end (&cache_evict_list))
-    cur_cache_elem = list_begin (&cache_evict_list);
-  else
-    cur_cache_elem = list_next (cur_cache_elem);
-
   struct cache_entry *ce;
   while (true)
     {
-      if (cur_cache_elem == list_end (&cache_evict_list))
-        cur_cache_elem = list_begin (&cache_evict_list);
-
-      ce = list_entry (cur_cache_elem, struct cache_entry, list_elem);
-      /* If acquisition fails, the entry is currently being accessed.
-         lock is released  when read/write is complete. */
+      cur_index++;
+      cur_index %= NUM_CACHE_SECTORS;
+      ce = &cache_entries[cur_index];
+      
       if (lock_try_acquire (&ce->lock))
         {
           if (ce->accessed)
@@ -137,39 +151,45 @@ cache_evict (void)
           else
             break;
         }
-      cur_cache_elem = list_next (cur_cache_elem);
     }
-
+  
   hash_delete (&cache_hash, &ce->hash_elem);
-
   return ce;
 }
 
-/* THIS SHOULD BE IN A HIGH PRORITY LOOPING THREAD, DONATION */
-// PROB SAFE TO UNLOCK CACHE LOCK? CHECK FILESYS DONE
+/* Writes back all dirty cache_entries to the disc and marks them
+   clean. */
 static void
 cache_flush (void)
 {
-  struct list_elem *e;
-  lock_acquire (&cache_lock);
-  for (e = list_begin (&cache_evict_list); 
-       e != list_end (&cache_evict_list); 
-       e = list_next (e))
+  for (unsigned i = 0; i < NUM_CACHE_SECTORS; i++)
     {
-      struct cache_entry *ce = list_entry (e, struct cache_entry, list_elem);
+      struct cache_entry *ce = &cache_entries[i];
       lock_acquire (&ce->lock);
-      lock_release (&cache_lock);
       if (ce->dirty)
         {
           block_write (fs_device, ce->sector, &ce->data);
           ce->dirty = false;
         }
-      lock_acquire (&cache_lock);
       lock_release (&ce->lock);
     }
-  lock_release (&cache_lock);
 }
 
+/* Thread function that flushes the cache every 30 seconds. */
+static void
+cache_flush_loop (void *done)
+{
+  while (!*(bool *) done)
+    {
+      cache_flush ();
+      timer_msleep (30 * 1000);
+    }
+}
+
+/* Searches for SECTOR in the cache. If not present, and cache_entry is 
+   assigned, evicting and writing back an entry if necessary. Data is 
+   read from the disc to the cache_entry, and a pointer to the entry 
+   is returned. */
 static struct cache_entry *
 cache_get_entry (unsigned sector)
 {
@@ -201,9 +221,6 @@ cache_get_entry (unsigned sector)
                        list_elem);
       /* Unlocked when read/write is complete. */
       lock_acquire (&ce->lock);
-      /* Add just before current place in evict list for
-         fairness. */
-      list_insert (cur_cache_elem, &ce->list_elem);
     }
   ce->sector = sector;
   hash_insert (&cache_hash, &ce->hash_elem);
@@ -215,6 +232,7 @@ cache_get_entry (unsigned sector)
   return ce;
 }
 
+/* Hashes cache_entries by the sector number it stores. */
 static unsigned 
 cache_hash_func (const struct hash_elem *e, void *aux UNUSED)
 {
@@ -222,6 +240,7 @@ cache_hash_func (const struct hash_elem *e, void *aux UNUSED)
   return hash_int ((int) ce->sector);
 }
 
+/* Comparator for CACHE_HASH. */
 static bool 
 cache_less_func (const struct hash_elem *a,
                  const struct hash_elem *b,
