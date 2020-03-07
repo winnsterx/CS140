@@ -12,7 +12,7 @@
 #define NUM_CACHE_SECTORS 64
 
 struct list cache_free_list;
-struct list cache_evict_list;
+struct hash cache_closed_hash;
 struct hash cache_hash;
 
 /* Used for hash searches without allocating an entire
@@ -44,8 +44,10 @@ static struct lock cache_lock;
 static unsigned cur_index;
 static bool done;
 
+static struct cache_entry *cache_lookup (unsigned, bool);
 static void cache_flush (void);
 static void cache_flush_loop (void *);
+static void cache_sector_cr (unsigned, bool);
 static struct cache_entry *cache_get_entry (unsigned);
 static unsigned cache_hash_func (const struct hash_elem *, void *);
 static bool cache_less_func (const struct hash_elem *, 
@@ -62,6 +64,11 @@ cache_init (void)
                             cache_less_func, 
                             NULL);
   ASSERT (success);
+  success = hash_init (&cache_closed_hash,
+                       cache_hash_func,
+                       cache_less_func,
+                       NULL);
+  ASSERT (success);
   lock_init (&cache_lock);
   list_init (&cache_free_list);
   cur_index = 0;
@@ -73,7 +80,7 @@ cache_init (void)
     }
 
   done = false;
-  thread_create ("cache_loop", PRI_DEFAULT, cache_flush_loop, (void *) &done);
+  thread_create ("cache_loop", PRI_MAX, cache_flush_loop, (void *) &done);
 }
 
 /* Writes dirty sectors and frees all resources. */
@@ -83,6 +90,7 @@ cache_destroy (void)
   cache_flush ();
   done = true;
   hash_destroy (&cache_hash, NULL);
+  hash_destroy (&cache_closed_hash, NULL);
 } 
 
 /* If the SECTOR is not present in the cache, SECTOR is read into the cache.
@@ -114,27 +122,85 @@ cache_sector_write (unsigned sector, void *buffer,
   lock_release (&ce->lock);
 }
 
+void
+cache_sector_fetch (unsigned sector)
+{
+  /* Only a small chance that the sector will be evicted
+     if the current thread seeks to read it next. */
+  struct cache_entry *ce = cache_get_entry (sector);
+  lock_release (&ce->lock);
+} 
+
+/* Checks is a sector is in the cache. If so, it moves it from
+   CACHE_HASH to CACHE_CLOSED_HASH. */
+void
+cache_sector_close (unsigned sector)
+{
+  cache_sector_cr (sector, false);
+}
+
+/* Used when freeing a sector, to prevent a deleted sector that is only
+   present in cache from ever being writtien to the disk. This is just
+   like closing a sector, but we set dirty to false, and free it. */
+void
+cache_sector_remove (unsigned sector)
+{
+  cache_sector_cr (sector, true);
+}
+
+static void
+cache_sector_cr (unsigned sector, bool deleted)
+{
+  lock_acquire (&cache_lock);
+  struct cache_entry *ce = cache_lookup (sector, false);
+  if (ce != NULL)
+    {
+      hash_delete (&cache_hash, &ce->hash_elem);
+      hash_insert (&cache_closed_hash, &ce->hash_elem);
+      if (deleted)
+        {
+          ce->dirty = false;
+          /* Code to free sector */
+        }
+    }
+  lock_release (&cache_lock);
+}
+
 /* Returns a pointer to the cache_entry assigned to SECTOR, if present.
    Otherwise returns NULL. */
 static struct cache_entry *
-cache_lookup (unsigned sector)
+cache_lookup (unsigned sector, bool closed)
 {
   ASSERT (lock_held_by_current_thread (&cache_lock));
+  struct hash *hash = closed ? &cache_closed_hash : &cache_hash;
   struct cache_entry_stub ces;
   ces.sector = sector;
-  struct hash_elem *e = hash_find (&cache_hash, &ces.elem);
+  struct hash_elem *e = hash_find (hash, &ces.elem);
   if (e == NULL)
     return NULL;
 
   return hash_entry (e, struct cache_entry, hash_elem);
 }
 
-/* Uses clock algorithm to select a cache_entry for eviction, removes
-   the entry from CACHE_HASH (signifies not present in cache). */
+/* First checks CACHE_CLOSED_HASH, and evicts an entry from it if
+   it is not empty. Otherwise uses clock algorithm to select a 
+   cache_entry for eviction, removes the entry from CACHE_HASH 
+   (signifies not present in cache). */
 static struct cache_entry *
 cache_evict (void)
 {
   struct cache_entry *ce;
+  struct hash_iterator i;
+  hash_first (&i, &cache_closed_hash);
+  struct hash_elem *e = hash_next (&i);
+  if (e != NULL)
+    {
+      hash_delete (&cache_closed_hash, e);
+      ce = hash_entry (e, struct cache_entry, hash_elem);
+      lock_acquire (&ce->lock);
+      return ce;
+    } 
+  
   while (true)
     {
       cur_index++;
@@ -175,7 +241,8 @@ cache_flush (void)
     }
 }
 
-/* Thread function that flushes the cache every 30 seconds. */
+/* Thread function that flushes the cache every 30 seconds. This
+   should run at high priority to ensure timely flushes. */
 static void
 cache_flush_loop (void *done)
 {
@@ -195,9 +262,19 @@ cache_get_entry (unsigned sector)
 {
   struct cache_entry *ce;
   lock_acquire (&cache_lock);
-  ce = cache_lookup (sector);
+  ce = cache_lookup (sector, false);
   if (ce != NULL)
     {
+      lock_acquire (&ce->lock);
+      lock_release (&cache_lock);
+      return ce;
+    }
+  /* May still be intact in CACHE_CLOSED_HASH. */
+  ce = cache_lookup (sector, true);
+  if (ce != NULL)
+    {
+      hash_delete (&cache_closed_hash, &ce->hash_elem);
+      hash_insert (&cache_hash, &ce->hash_elem);
       lock_acquire (&ce->lock);
       lock_release (&cache_lock);
       return ce;
