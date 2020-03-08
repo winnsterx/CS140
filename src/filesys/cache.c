@@ -223,7 +223,7 @@ cache_evict (void)
   return ce;
 }
 
-/* Writes back all dirty cache_entries to the disc and marks them
+/* Writes back all dirty cache_entries to the disk and marks them
    clean. */
 static void
 cache_flush (void)
@@ -255,7 +255,7 @@ cache_flush_loop (void *done)
 
 /* Searches for SECTOR in the cache. If not present, and cache_entry is 
    assigned, evicting and writing back an entry if necessary. Data is 
-   read from the disc to the cache_entry, and a pointer to the entry 
+   read from the disk to the cache_entry, and a pointer to the entry 
    is returned. */
 static struct cache_entry *
 cache_get_entry (unsigned sector)
@@ -279,7 +279,7 @@ cache_get_entry (unsigned sector)
       lock_release (&cache_lock);
       return ce;
     }
-  /* Sector must be read from the disc. */
+  /* Sector must be read from the disk. */
   unsigned old_sector;
   bool write_back = false;
   if (list_empty (&cache_free_list))
