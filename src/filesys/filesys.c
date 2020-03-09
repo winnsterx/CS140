@@ -76,7 +76,6 @@ filesys_open (const char *name)
   if (dir != NULL)
     dir_lookup (dir, name, &inode);
   dir_close (dir);
-  printf ("WAS HAT EINFACH PASSIERT\n");
   return file_open (inode);
 }
 
@@ -100,9 +99,7 @@ do_format (void)
 {
   printf ("Formatting file system...");
   free_map_create ();
-  printf ("CREATED\n");
   if (!dir_create (ROOT_DIR_INUMBER, 16))
     PANIC ("root directory creation failed");
   free_map_close ();
-  printf ("done.\n");
 }

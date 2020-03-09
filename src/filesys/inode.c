@@ -98,8 +98,6 @@ inode_write_to_table (unsigned inumber, struct inode_disk *disk_inode)
 static block_sector_t
 byte_to_sector (const struct inode *inode, off_t pos)
 {
-  if (inode->inumber == 1)
-  	hex_dump (0, &inode->data.arr, 8, false);
   // CHECK THI SLOGIC, reanem index ofsets etc
   ASSERT (inode != NULL);
   unsigned sector;
@@ -392,7 +390,6 @@ inode_close (struct inode *inode)
       /* Deallocate blocks if removed. */
       if (inode->removed) 
         {
-          printf ("making sure\n");
           inode_release_inumber (inode->inumber);
           inode_release_sectors (inode); 
         }
@@ -436,7 +433,6 @@ inode_read_at (struct inode *inode, void *buffer_, off_t size, off_t offset)
 
       /* Disk sector to read from. */
       block_sector_t sector_idx = byte_to_sector (inode, offset);
-      printf ("READ FROM: %u\n", sector_idx);
       cache_sector_read (sector_idx, buffer + bytes_read, 
                          chunk_size, sector_ofs);
 
@@ -480,7 +476,6 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
       /* Disk sector to write to. */
       block_sector_t sector_idx = byte_to_sector (inode, offset);
       
-      printf ("WRITE TO: %u\n", sector_idx);
       cache_sector_write (sector_idx, buffer + bytes_written,
                           chunk_size, sector_ofs);
     

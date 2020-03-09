@@ -97,25 +97,19 @@ lookup (const struct dir *dir, const char *name,
   
   ASSERT (dir != NULL);
   ASSERT (name != NULL);
-  printf ("LOOKUP: %u\n", inode_get_inumber (dir->inode));
   for (ofs = 0; inode_read_at (dir->inode, &e, sizeof e, ofs) == sizeof e;
        ofs += sizeof e) 
     {
-//     printf ("L NAME: %s\t L INUMBER: %u\tL OFS:%u\n", e.name, e.inumber, ofs);
   
-  printf ("INUMBER: %u\tOFFSET: %u\n", inode_get_inumber (dir->inode), ofs);
     if (e.in_use && !strcmp (name, e.name)) 
       {
         if (ep != NULL)
           *ep = e;
         if (ofsp != NULL)
           *ofsp = ofs;
-       {printf ("\n\n");
         return true;
-  }
       }
-     }
-  printf ("\n\n");
+    }
   return false;
 }
 
@@ -182,11 +176,7 @@ dir_add (struct dir *dir, const char *name, unsigned inumber)
   e.inumber = inumber;
   success = inode_write_at (dir->inode, &e, sizeof e, ofs) == sizeof e;
   struct dir_entry test;
-  printf ("ADD:\nINUMBER: %u\tOFFSET: %u\n\n", inode_get_inumber (dir->inode), ofs);
   inode_read_at (dir->inode, &test, sizeof test, ofs);
-  //printf ("E NAME: %s\tE INUMBER: %u\t E OFS: %u\n", e.name, e.inumber, ofs);
-  //printf ("TEST NAME: %s\tTEST INUMBER: %u\n", test.name, test.inumber);
-  //printf ("ADD INODE: %u\n", inode_get_inumber (dir->inode));
  done:
   return success;
 }
