@@ -141,6 +141,7 @@ cache_sector_close (unsigned sector)
 
 /* Adds a dirty cache_entry for SECTOR, as a blank sector. Used
    when allocating sectors to a file. The entry is marked dirty. */
+void
 cache_sector_add (unsigned sector)
 {
   struct cache_entry *ce = cache_get_entry (sector);

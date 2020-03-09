@@ -151,7 +151,7 @@ inode_assign_inumber (unsigned *inumber)
   unsigned inodes_per_page = BLOCK_SECTOR_SIZE / sizeof disk_inode;
   for (unsigned i = 0; i < INODE_TABLE_SECTORS; i++)
     {
-      for (unsigned j = 0; i < inodes_per_page; j++)
+      for (unsigned j = 0; j < inodes_per_page; j++)
         {
           lock_acquire (&inumber_lock);
           cache_sector_read (i, &disk_inode, sizeof disk_inode, 
@@ -393,7 +393,13 @@ inode_close (struct inode *inode)
           inode_release_inumber (inode->inumber);
           inode_release_sectors (inode); 
         }
-
+      else
+        {
+          // Do this when need to be safe instead of just on close
+          // Cant mess with freemap inode
+          if (inode->inumber != FREE_MAP_INUMBER)
+            inode_write_to_table (inode->inumber, &inode->data);
+        }
       free (inode); 
     }
 }
@@ -461,7 +467,7 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
 
   if (inode->deny_write_cnt)
     return 0;
-
+  
   while (size > 0) 
     {
       /* Offset within sector to write to. */

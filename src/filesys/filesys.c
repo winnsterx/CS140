@@ -98,6 +98,12 @@ static void
 do_format (void)
 {
   printf ("Formatting file system...");
+  /* Clear the inode table. */
+  
+  // TO MANY READS ARE HAPPENING, FIND OUT WHY
+  for (unsigned i = 0; i < INODE_TABLE_SECTORS; i++)
+    cache_sector_add (i);    
+  
   free_map_create ();
   if (!dir_create (ROOT_DIR_INUMBER, 16))
     PANIC ("root directory creation failed");
