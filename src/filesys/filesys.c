@@ -48,14 +48,15 @@ filesys_done (void)
 bool
 filesys_create (const char *name, off_t initial_size) 
 {
-  block_sector_t inode_sector = 0;
+  /* 0 is reserved for the free map. */
+  block_sector_t inumber = 0;
   struct dir *dir = dir_open_root ();
   bool success = (dir != NULL
-                  && free_map_allocate (1, &inode_sector)
-                  && inode_create (inode_sector, initial_size)
-                  && dir_add (dir, name, inode_sector));
-  if (!success && inode_sector != 0) 
-    free_map_release (inode_sector, 1);
+                  && inode_assign_inumber (&inumber)
+                  && inode_create (inumber, initial_size)
+                  && dir_add (dir, name, inumber));
+  if (!success && inumber != 0) 
+    inode_release_inumber (inumber);
   dir_close (dir);
 
   return success;
@@ -75,7 +76,7 @@ filesys_open (const char *name)
   if (dir != NULL)
     dir_lookup (dir, name, &inode);
   dir_close (dir);
-
+  printf ("WAS HAT EINFACH PASSIERT\n");
   return file_open (inode);
 }
 
@@ -99,7 +100,8 @@ do_format (void)
 {
   printf ("Formatting file system...");
   free_map_create ();
-  if (!dir_create (ROOT_DIR_SECTOR, 16))
+  printf ("CREATED\n");
+  if (!dir_create (ROOT_DIR_INUMBER, 16))
     PANIC ("root directory creation failed");
   free_map_close ();
   printf ("done.\n");

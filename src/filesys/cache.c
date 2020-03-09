@@ -139,6 +139,17 @@ cache_sector_close (unsigned sector)
   cache_sector_cr (sector, false);
 }
 
+/* Adds a dirty cache_entry for SECTOR, as a blank sector. Used
+   when allocating sectors to a file. The entry is marked dirty. */
+cache_sector_add (unsigned sector)
+{
+  struct cache_entry *ce = cache_get_entry (sector);
+  ce->accessed = true;
+  ce->dirty = true;
+  memset (&ce->data[0], 0, BLOCK_SECTOR_SIZE);
+  lock_release (&ce->lock);
+}
+
 /* Used when freeing a sector, to prevent a deleted sector that is only
    present in cache from ever being writtien to the disk. This is just
    like closing a sector, but we set dirty to false, and free it. */

@@ -8,8 +8,11 @@
 struct bitmap;
 
 void inode_init (void);
-bool inode_create (block_sector_t, off_t);
-struct inode *inode_open (block_sector_t);
+bool inode_assign_inumber (unsigned *);
+void inode_release_inumber (unsigned);
+bool inode_create (unsigned, off_t);
+bool inode_free_map_create (unsigned, unsigned, unsigned *);
+struct inode *inode_open (unsigned);
 struct inode *inode_reopen (struct inode *);
 block_sector_t inode_get_inumber (const struct inode *);
 void inode_close (struct inode *);
