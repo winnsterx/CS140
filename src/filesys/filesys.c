@@ -49,7 +49,7 @@ bool
 filesys_create (const char *name, off_t initial_size) 
 {
   /* 0 is reserved for the free map. */
-  block_sector_t inumber = 0;
+  inumber_t inumber = 0;
   struct dir *dir = dir_open_root ();
   bool success = (dir != NULL
                   && inode_assign_inumber (&inumber)

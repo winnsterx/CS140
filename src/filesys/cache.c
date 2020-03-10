@@ -111,7 +111,7 @@ cache_sector_read (unsigned sector, void *buffer,
    SIZE bytes from BUFFER are copied into OFFSET bytes into the cache_entry.
    The cache_entry is marked as accessed and dirty. */
 void 
-cache_sector_write (unsigned sector, void *buffer,
+cache_sector_write (unsigned sector, const void *buffer,
                     unsigned size, unsigned offset)
 {
   ASSERT (offset + size <= BLOCK_SECTOR_SIZE);

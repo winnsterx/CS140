@@ -5,16 +5,17 @@
 #include "filesys/off_t.h"
 #include "devices/block.h"
 
+typedef unsigned inumber_t;
 struct bitmap;
 
 void inode_init (void);
-bool inode_assign_inumber (unsigned *);
-void inode_release_inumber (unsigned);
-bool inode_create (unsigned, off_t);
+bool inode_assign_inumber (inumber_t *);
+void inode_release_inumber (inumber_t);
+bool inode_create (inumber_t, off_t);
 bool inode_create_seq (unsigned, unsigned *, unsigned, unsigned);
-struct inode *inode_open (unsigned);
+struct inode *inode_open (inumber_t);
 struct inode *inode_reopen (struct inode *);
-block_sector_t inode_get_inumber (const struct inode *);
+inumber_t inode_get_inumber (const struct inode *);
 void inode_close (struct inode *);
 void inode_remove (struct inode *);
 off_t inode_read_at (struct inode *, void *, off_t size, off_t offset);
