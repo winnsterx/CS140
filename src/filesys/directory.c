@@ -5,6 +5,7 @@
 #include "filesys/filesys.h"
 #include "filesys/inode.h"
 #include "threads/malloc.h"
+#include "threads/thread.h"
 
 /* A directory. */
 struct dir 
@@ -234,3 +235,78 @@ dir_readdir (struct dir *dir, char name[NAME_MAX + 1])
     }
   return false;
 }
+
+/* Returns the directory path */
+char *
+dir_path (const char *name)
+{
+  char *last = strrchr (name, '/');
+  if (last == NULL) return NULL;
+  int len = last - name + 1;
+  char *path = malloc (len + 1); /* +1 accounts for \0 */
+  if (path == NULL) return NULL;
+  strlcpy (path, name, len + 1);
+  return path; 
+}
+
+char *
+dir_file (const char *name)
+{
+  char *begin = strrchr (name, '/');
+  
+  /* File is in current directory. Return name. */
+  if (begin == NULL)
+    return (char *) name;
+
+  begin += 1;
+  /* Reject filenames ending in '/' */
+  if (begin == NULL) 
+    return NULL;
+
+  int len = strlen (begin);
+  if (len == 0 || len > NAME_MAX) 
+    return NULL;
+
+  return begin;
+}
+
+/* Finds the directory NAME */ 
+struct dir *
+dir_fetch (char *name) 
+{
+  struct dir *cur_dir; 
+  char *saved; 
+  char *next;
+
+  /* Directory path is NULL */
+  if (name == NULL) 
+    return NULL;
+
+  /* Absolute path */  
+  if (name[0] == '/') {
+    cur_dir = dir_open_root ();
+  } else {
+  /* Relative path */
+    cur_dir = dir_reopen (thread_current ()->cwd);
+  }
+  
+  for (next = strtok_r (name, "/", &saved); next != NULL;
+       next = strtok_r (NULL, "/", &saved))
+  {
+    struct inode *inode = NULL;
+    if (dir_lookup (cur_dir, next, &inode))
+    {
+      /* next directory is found in cur_dir */
+      dir_close (cur_dir);
+      cur_dir = dir_open (inode);
+    } else {
+      dir_close (cur_dir);
+      free (name);
+      return NULL;
+    }
+  }
+
+  free (name); /* Frees the path malloc'ed */
+  return cur_dir; 
+}
+

@@ -28,6 +28,12 @@ static void seek (int fd, unsigned position);
 static unsigned tell (int fd);
 static void close (int fd);
 
+static bool chdir (const char *dir);
+static bool mkdir (const char *dir);
+static bool readdir (int fd, char *name);
+static bool isdir (int fd);
+static int inumber (int fd);
+
 static int get_user_byte (const uint8_t *);
 static unsigned overflow_adjusted_size (const uint8_t *, unsigned);
 static uint8_t *first_invalid_uaddr (const uint8_t *, unsigned);
