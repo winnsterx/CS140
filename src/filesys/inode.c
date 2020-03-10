@@ -52,84 +52,108 @@ struct inode
     struct inode_disk data;             /* Inode content. */
   };
 
-
+/* Derefences SECTOR. If it is 0, this function allocates
+   a sector a places its number at SECTOR. Returns false
+   if a sector allocation fails. */
 static bool
 sector_fixup (unsigned *sector)
 {
   if (*sector == 0)
     {
       if (!free_map_allocate (1, sector))
-        PANIC ("Disk full!");
+        return false;
       cache_sector_add (*sector);
-      return true;
     }
 
-  return false;
+  return true;
 }  
 
-static void
+/* Gets a sector number from an index sector FROM_SECTOR,
+   at index INDEX. Allocates and writes back a sector number 
+   if that index of FROM_SECTOR had not previously been allocated.
+   Return false if a sector allocation fails. */
+static bool
 sector_fixup_disk (unsigned from_sector, unsigned *to_sector, 
                           unsigned index)
 {
   cache_sector_read (from_sector, to_sector, sizeof (unsigned), 
                      index * sizeof (unsigned));
-  if (sector_fixup (to_sector))
+  unsigned prev_sector = *to_sector;
+  if (!sector_fixup (to_sector))
+    return false;
+  if (prev_sector == 0)
     cache_sector_write (from_sector, to_sector, sizeof (unsigned), 
                         index * sizeof (unsigned));
+
+  return true;
 }
 
-static bool
+/* Writes DISK_INODE to the inode table at index INUMBER. */
+static void
 inode_write_to_table (unsigned inumber, struct inode_disk *disk_inode)
 { 
   unsigned inodes_per_page = BLOCK_SECTOR_SIZE / sizeof *disk_inode;
   block_sector_t table_sector = inumber / inodes_per_page;
   unsigned table_ofs = (inumber % inodes_per_page) * sizeof *disk_inode;
-  if (table_sector >= INODE_TABLE_SECTORS)
-    return false;
+  ASSERT (table_sector < INODE_TABLE_SECTORS);
   cache_sector_write (table_sector, disk_inode, sizeof *disk_inode, 
                       table_ofs);
-  return true;
 }
+
+/* Allocates a sector of index INDEX if not already allocated. 
+   Allocates intermediate sectors as needed based on level of 
+   indirection (DEPTH), if they have not already been allocated.
+   Returns the final sector number, and returns -1 if a necessary
+   sector allocation fails. */
+static unsigned
+sector_fixup_depth (struct inode *inode, unsigned start_index, 
+                    unsigned prev_limit, unsigned index, unsigned depth)
+{
+  index -= prev_limit;
+  unsigned arr_index  = index;
+  for (unsigned i = 0; i < depth; i++)
+    arr_index /= NUM_PER_SECTOR;
+  
+  arr_index += start_index;
+  if (!sector_fixup (&inode->data.arr[arr_index]))
+    return -1;
+  unsigned sector_to = inode->data.arr[arr_index];
+  for (unsigned i = 0; i < depth; i++)
+    {
+      unsigned sector_index = index;
+      for (unsigned j = i + 1; j < depth; j++)
+        sector_index /= NUM_PER_SECTOR;
+      sector_index %= NUM_PER_SECTOR;
+      unsigned sector_from = sector_to;
+      if (!sector_fixup_disk (sector_from, &sector_to, sector_index))
+        return -1;
+    }
+
+  inode_write_to_table (inode->inumber, &inode->data);
+  return sector_to;
+}
+      
+// NEED SYNCH?
+// HOW YO FREE UNUSED PAGES ON RETURN?
 
 /* Returns the block device sector that contains byte offset POS
    within INODE.
-   Returns -1 if INODE does not contain data for a byte at offset
-   POS. */
+   Returns -1 if POS excdeeds the maximum file size, or if a sector
+   allocation was needed but no sectors were free. */
 static block_sector_t
 byte_to_sector (const struct inode *inode, off_t pos)
 {
-  // CHECK THI SLOGIC, reanem index ofsets etc
   ASSERT (inode != NULL);
   unsigned sector;
   unsigned index = pos / BLOCK_SECTOR_SIZE;
   if (index < DIRECT_LIMIT)
-    {
-      sector_fixup (&inode->data.arr[index]);
-      sector = inode->data.arr[index];
-    }
+    return sector_fixup_depth (inode, 0, 0, index, 0);
   else if (index < SID_LIMIT)
-    {
-      unsigned sid_index = SID_INDEX + (index - DIRECT_LIMIT) / 
-                           NUM_PER_SECTOR;
-      unsigned d_index = ((index - DIRECT_LIMIT) % NUM_PER_SECTOR);
-      sector_fixup (&inode->data.arr[sid_index]);
-      sector_fixup_disk (inode->data.arr[sid_index], &sector, d_index);  
-    }
+    return sector_fixup_depth (inode, SID_INDEX, DIRECT_LIMIT, index, 1);
   else if (index < DID_LIMIT)
-    {
-      unsigned d_sector;
-      unsigned did_index = DID_INDEX + (index - SID_LIMIT) /
-                           (NUM_PER_SECTOR * NUM_PER_SECTOR);
-      unsigned sid_index = ((index - SID_LIMIT) / NUM_PER_SECTOR) %
-                           NUM_PER_SECTOR;
-      unsigned d_index = ((index - SID_LIMIT) % NUM_PER_SECTOR);
-      sector_fixup (&inode->data.arr[did_index]);
-      sector_fixup_disk (inode->data.arr[did_index], &d_sector, sid_index);  
-      sector_fixup_disk (d_sector, &sector, d_index);  
-    }
-/* error check ? need to be every time? */
-    inode_write_to_table (inode->inumber, &inode->data);   
-    return sector;
+    return sector_fixup_depth (inode, DID_INDEX, SID_LIMIT, index, 2);  
+ 
+  return -1;
 }
 
 /* List of open inodes, so that opening a single inode twice
@@ -144,6 +168,9 @@ inode_init (void)
   lock_init (&inumber_lock);
 }
 
+/* Allocates the first available inumber from the inode table,
+   and places it at INUMBER. Returns false if no inumbers are
+   available (maximum number of files reached). */
 bool
 inode_assign_inumber (unsigned *inumber)
 {
@@ -203,7 +230,8 @@ inode_create (unsigned inumber, off_t length)
   disk_inode.length = length;
   disk_inode.present = true;
   memset (&disk_inode.arr, 0, sizeof (disk_inode.arr));
-  return inode_write_to_table (inumber, &disk_inode);
+  inode_write_to_table (inumber, &disk_inode);
+  return true; //THIS CANT FAIL
 }
 
 /* Reads an inode from SECTOR
@@ -262,100 +290,117 @@ inode_get_inumber (const struct inode *inode)
   return inode->inumber;
 }
 
-bool
-inode_free_map_create (unsigned inumber, unsigned length, unsigned *sector)
+
+
+static struct create_seq_state
+  {
+    struct inode *inode;
+    unsigned cur_sector;
+    unsigned file_sectors;
+    unsigned *total_sectors;
+    unsigned start_sector;
+  };
+
+
+static bool
+create_seq_advance (struct create_seq_state *s)
 {
-  unsigned num_sectors = bytes_to_sectors (length);
-  ASSERT (num_sectors >= 1);
-  if (!inode_create (inumber, length))
-    return false;
+  if (--s->file_sectors == 0)
+    {
+      inode_write_to_table (s->inode->inumber, &s->inode->data);
+      inode_close (s->inode);
+      *s->total_sectors = s->cur_sector - s->start_sector;
+      return true;
+    }
+  s->cur_sector++;
+  return false;
+}
 
-  struct inode *inode = inode_open (inumber);
-  
-  unsigned i = 0;
-  unsigned _sector = INODE_TABLE_SECTORS;
-  while (i < SID_INDEX)
+static bool
+create_seq_advance_sector (unsigned *saved_sector, struct create_seq_state *s,
+                           unsigned depth)
+{
+  *saved_sector = s->cur_sector++;
+  if (depth == 0)
+    return create_seq_advance (s);
+  for (unsigned i = 0; i < NUM_PER_SECTOR; i++)
     {
-      inode->data.arr[i++] = _sector++;
-      if (--num_sectors == 0)
-        {
-          inode_write_to_table (inumber, &inode->data);
-          inode_close (inode);
-          *sector = _sector - INODE_TABLE_SECTORS;
-          return true;
-        }
+      cache_sector_write (saved_sector, &s->cur_sector, sizeof (unsigned), 
+                          i * sizeof (unsigned));
+      unsigned saved_sector_new = s->cur_sector;
+      if (create_seq_advance_sector (&saved_sector_new, s, depth))
+        return true;
     }
-  while (i < DID_INDEX)
-    {
-      inode->data.arr[i] = _sector++;
-      for (unsigned j = 0; j < NUM_PER_SECTOR; j++)
-        {
-          cache_sector_write (inode->data.arr[i], &_sector, sizeof (unsigned),
-                              j * sizeof (unsigned));
-          _sector++;
-          if (--num_sectors == 0)
-            {
-              inode_write_to_table (inumber, &inode->data);
-              inode_close (inode);
-              *sector = _sector - INODE_TABLE_SECTORS;
-              return true;
-            }
-        }
-      i++;
-    }
-  while (i < MAX_INDEX)
-    {
-      inode->data.arr[i] = _sector++;
-      for (unsigned j = 0; j < NUM_PER_SECTOR; j++)
-        {
-          cache_sector_write (inode->data.arr[i], &_sector, sizeof (unsigned),
-                              j * sizeof (unsigned));
-          unsigned saved_sector = _sector++;
-          for (unsigned k = 0; k < NUM_PER_SECTOR; k++)
-            {
-              cache_sector_write (saved_sector, &_sector, sizeof (unsigned),
-                                  k * sizeof (unsigned));
-              _sector++;
-              if (--num_sectors == 0)
-                {
-                  inode_write_to_table (inumber, &inode->data);
-                  inode_close (inode);
-                  *sector = _sector - INODE_TABLE_SECTORS;
-                  return true;
-                }
-            }
-        }
-    }
-
-  inode_close (inode);
   return false;
 }
           
+
+/* Creates an inode for a file of length LENGTH, sequentially assigning 
+   sectors starting at START_SECTOR. Returns the populates SECTOR with 
+   the number of sectors used, including metadata sectors. The caller is
+   responsible for allocating the sectors. Returns false if LENGTH exceeds
+   maximum file length. */
+
+bool
+inode_create_seq (unsigned inumber, unsigned *sector, unsigned length, 
+                  unsigned start_sector)
+{
+  inode_create (inumber, length);
+
+  struct create_seq_state s;
+  s.file_sectors = bytes_to_sectors (length);
+  s.inode = inode_open (inumber);
+  s.start_sector = start_sector;
+  s.cur_sector = start_sector;
+  s.total_sectors = sector;
+
+  unsigned i = 0;
+  for (; i < SID_INDEX; i++)
+    if (create_seq_advance_sector (&s.inode->data.arr[i], &s, 0))
+      return true;
+  for (; i < DID_INDEX; i++)
+    if (create_seq_advance_sector (&s.inode->data.arr[i], &s, 1))
+      return true;
+  for (; i < MAX_INDEX; i++)
+    if (create_seq_advance_sector (&s.inode->data.arr[i], &s, 2))
+      return true;
+
+  inode_close (s.inode);
+  return false;
+}
+// TEST THIS FOR LARGE FREE MAPS 
   
 
 
 static void
 sector_deallocate (unsigned sector)
 {
- // Mark as closed in cache?
   if (sector != 0)
-    free_map_release (sector, 1);
+    {
+      cache_sector_remove (sector);
+      free_map_release (sector, 1);
+    }
 }
 
 static void
 sector_deallocate_disk (unsigned from_sector, unsigned depth)
 {
+  /* Skip unassigned entries. */
   if (from_sector == 0)
     return;
-  depth--;
+
+  if (depth-- == 0)
+    {
+      sector_deallocate (from_sector);
+      return;
+    }
+
   unsigned to_sector;
   for (unsigned j = 0; j < BLOCK_SECTOR_SIZE / sizeof (block_sector_t); j++)
     {
       cache_sector_read (from_sector, &to_sector, sizeof (unsigned),
                          j * sizeof (unsigned));
-      if (depth > 0)
-        sector_deallocate_disk (to_sector, depth);
-      sector_deallocate (to_sector);
+      sector_deallocate_disk (to_sector, depth);
     }
   sector_deallocate (from_sector);
 }
@@ -364,7 +409,7 @@ static void
 inode_release_sectors (struct inode *inode)
 {
   for (unsigned i = 0; i < SID_INDEX; i++)
-    sector_deallocate (inode->data.arr[i]);
+    sector_deallocate_disk (inode->data.arr[i], 0);
   for (unsigned i = SID_INDEX; i < DID_INDEX; i++)
     sector_deallocate_disk (inode->data.arr[i], 1);
   for (unsigned i = DID_INDEX; i < MAX_INDEX; i++)
@@ -393,13 +438,7 @@ inode_close (struct inode *inode)
           inode_release_inumber (inode->inumber);
           inode_release_sectors (inode); 
         }
-      else
-        {
-          // Do this when need to be safe instead of just on close
-          // Cant mess with freemap inode
-          if (inode->inumber != FREE_MAP_INUMBER)
-            inode_write_to_table (inode->inumber, &inode->data);
-        }
+     
       free (inode); 
     }
 }
@@ -485,11 +524,13 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
       cache_sector_write (sector_idx, buffer + bytes_written,
                           chunk_size, sector_ofs);
     
-      // Update file size after so read deosnt get confused
-      // What if two writes happen at once?
-      inode->data.length = inode->data.length > offset + chunk_size ?
-                           inode->data.length : offset + chunk_size;
-
+      // POTENTIAL SYNCH ISSUE
+      if (offset + chunk_size > inode->data.length)
+        {
+          inode->data.length = offset + chunk_size;
+          inode_write_to_table (inode->inumber, &inode->data);
+        }
+      
       /* Advance. */
       size -= chunk_size;
       offset += chunk_size;

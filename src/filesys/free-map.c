@@ -67,9 +67,6 @@ free_map_close (void)
   file_close (free_map_file);
 }
 
-
-// MAYBE DONT USE AN ACTUAL FILE, AND WRITE DIRECTLY TO BLOCKS
-
 /* Creates a new free map file on disk and writes the free map to
    it. */
 void
@@ -78,7 +75,8 @@ free_map_create (void)
   /* Create inode. */
   unsigned length = bitmap_file_size (free_map);
   unsigned num_sectors;
-  if (!inode_free_map_create (FREE_MAP_INUMBER, length, &num_sectors))
+  if (!inode_create_seq (FREE_MAP_INUMBER, &num_sectors, length, 
+                         INODE_TABLE_SECTORS))
     PANIC ("free map creation or open failed");
   
   /* Mark all sectors used by the free-map file. */

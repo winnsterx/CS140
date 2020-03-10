@@ -11,7 +11,7 @@ void inode_init (void);
 bool inode_assign_inumber (unsigned *);
 void inode_release_inumber (unsigned);
 bool inode_create (unsigned, off_t);
-bool inode_free_map_create (unsigned, unsigned, unsigned *);
+bool inode_create_seq (unsigned, unsigned *, unsigned, unsigned);
 struct inode *inode_open (unsigned);
 struct inode *inode_reopen (struct inode *);
 block_sector_t inode_get_inumber (const struct inode *);
