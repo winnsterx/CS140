@@ -17,7 +17,7 @@ struct dir
 /* A single directory entry. */
 struct dir_entry 
   {
-    block_sector_t inode_sector;        /* Sector number of header. */
+    unsigned inumber;        /* Sector number of header. */
     char name[NAME_MAX + 1];            /* Null terminated file name. */
     bool in_use;                        /* In use or free? */
   };
@@ -55,7 +55,7 @@ dir_open (struct inode *inode)
 struct dir *
 dir_open_root (void)
 {
-  return dir_open (inode_open (ROOT_DIR_SECTOR));
+  return dir_open (inode_open (ROOT_DIR_INUMBER));
 }
 
 /* Opens and returns a new directory for the same inode as DIR.
@@ -98,9 +98,10 @@ lookup (const struct dir *dir, const char *name,
   
   ASSERT (dir != NULL);
   ASSERT (name != NULL);
-
   for (ofs = 0; inode_read_at (dir->inode, &e, sizeof e, ofs) == sizeof e;
        ofs += sizeof e) 
+    {
+  
     if (e.in_use && !strcmp (name, e.name)) 
       {
         if (ep != NULL)
@@ -109,6 +110,7 @@ lookup (const struct dir *dir, const char *name,
           *ofsp = ofs;
         return true;
       }
+    }
   return false;
 }
 
@@ -126,7 +128,7 @@ dir_lookup (const struct dir *dir, const char *name,
   ASSERT (name != NULL);
 
   if (lookup (dir, name, &e, NULL))
-    *inode = inode_open (e.inode_sector);
+    *inode = inode_open (e.inumber);
   else
     *inode = NULL;
 
@@ -140,7 +142,7 @@ dir_lookup (const struct dir *dir, const char *name,
    Fails if NAME is invalid (i.e. too long) or a disk or memory
    error occurs. */
 bool
-dir_add (struct dir *dir, const char *name, block_sector_t inode_sector)
+dir_add (struct dir *dir, const char *name, inumber_t inumber)
 {
   struct dir_entry e;
   off_t ofs;
@@ -172,9 +174,10 @@ dir_add (struct dir *dir, const char *name, block_sector_t inode_sector)
   /* Write slot. */
   e.in_use = true;
   strlcpy (e.name, name, sizeof e.name);
-  e.inode_sector = inode_sector;
+  e.inumber = inumber;
   success = inode_write_at (dir->inode, &e, sizeof e, ofs) == sizeof e;
-
+  struct dir_entry test;
+  inode_read_at (dir->inode, &test, sizeof test, ofs);
  done:
   return success;
 }
@@ -198,7 +201,7 @@ dir_remove (struct dir *dir, const char *name)
     goto done;
 
   /* Open inode. */
-  inode = inode_open (e.inode_sector);
+  inode = inode_open (e.inumber);
   if (inode == NULL)
     goto done;
 

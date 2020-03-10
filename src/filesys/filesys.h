@@ -4,9 +4,14 @@
 #include <stdbool.h>
 #include "filesys/off_t.h"
 
-/* Sectors of system file inodes. */
-#define FREE_MAP_SECTOR 0       /* Free map file inode sector. */
-#define ROOT_DIR_SECTOR 1       /* Root directory file inode sector. */
+/* Size of the inode table in sectors. */
+#define INODE_TABLE_SECTORS 8
+
+/* inumbers of system file inodes. */
+#define FREE_MAP_INUMBER 0
+#define ROOT_DIR_INUMBER 1
+
+
 
 /* Block device that contains the file system. */
 struct block *fs_device;

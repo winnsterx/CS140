@@ -4,7 +4,7 @@
 #include "filesys/file.h"
 #include "filesys/filesys.h"
 #include "filesys/inode.h"
-
+// Dont use a file here, to allow 0 to mean null in inode
 static struct file *free_map_file;   /* Free map file. */
 static struct bitmap *free_map;      /* Free map, one bit per sector. */
 
@@ -15,8 +15,8 @@ free_map_init (void)
   free_map = bitmap_create (block_size (fs_device));
   if (free_map == NULL)
     PANIC ("bitmap creation failed--file system device is too large");
-  bitmap_mark (free_map, FREE_MAP_SECTOR);
-  bitmap_mark (free_map, ROOT_DIR_SECTOR);
+  for (unsigned i = 0; i < INODE_TABLE_SECTORS; i++)
+    bitmap_mark (free_map, i);
 }
 
 /* Allocates CNT consecutive sectors from the free map and stores
@@ -53,7 +53,7 @@ free_map_release (block_sector_t sector, size_t cnt)
 void
 free_map_open (void) 
 {
-  free_map_file = file_open (inode_open (FREE_MAP_SECTOR));
+  free_map_file = file_open (inode_open (FREE_MAP_INUMBER));
   if (free_map_file == NULL)
     PANIC ("can't open free map");
   if (!bitmap_read (free_map, free_map_file))
@@ -73,11 +73,18 @@ void
 free_map_create (void) 
 {
   /* Create inode. */
-  if (!inode_create (FREE_MAP_SECTOR, bitmap_file_size (free_map)))
-    PANIC ("free map creation failed");
-
+  unsigned length = bitmap_file_size (free_map);
+  unsigned num_sectors;
+  if (!inode_create_seq (FREE_MAP_INUMBER, &num_sectors, length, 
+                         INODE_TABLE_SECTORS))
+    PANIC ("free map creation or open failed");
+  
+  /* Mark all sectors used by the free-map file. */
+  for (unsigned i = 0; i < num_sectors; i++)
+    bitmap_mark (free_map, i + INODE_TABLE_SECTORS);
+ 
   /* Write bitmap to file. */
-  free_map_file = file_open (inode_open (FREE_MAP_SECTOR));
+  free_map_file = file_open (inode_open (FREE_MAP_INUMBER));
   if (free_map_file == NULL)
     PANIC ("can't open free map");
   if (!bitmap_write (free_map, free_map_file))
