@@ -22,16 +22,17 @@
 /* On-disk inode. Must not be larger than BLOCK_SECTOR_SIZE. */
 struct inode_disk
   {
-    bool present;
+    bool in_use;                        /* Inode entry in use. */
     off_t length;                       /* File size in bytes. */
-    unsigned arr[8];
+    unsigned arr[8];                    /* Direct, indirect and doubly
+                                           inderect sector mappings. */
   };
 
 /* In-memory inode. */
 struct inode 
   {
     struct list_elem elem;              /* Element in inode list. */
-    unsigned inumber;              /* Sector number of disk location. */
+    unsigned inumber;                   /* inumber in inode table. */
     int open_cnt;                       /* Number of openers. */
     bool removed;                       /* True if deleted, false otherwise. */
     int deny_write_cnt;                 /* 0: writes ok, >0: deny writes. */
@@ -88,9 +89,9 @@ inode_assign_inumber (inumber_t *inumber)
           lock_acquire (&inumber_lock);
           cache_sector_read (i, &disk_inode, sizeof disk_inode, 
                              j * sizeof disk_inode);
-          if (!disk_inode.present)
+          if (!disk_inode.in_use)
             {
-              disk_inode.present = true;
+              disk_inode.in_use = true;
               cache_sector_write (i, &disk_inode, sizeof disk_inode, 
                                   j * sizeof disk_inode);
               lock_release (&inumber_lock);
@@ -128,7 +129,7 @@ inode_create (inumber_t inumber, off_t length)
   struct inode_disk disk_inode; 
   
   disk_inode.length = length;
-  disk_inode.present = true;
+  disk_inode.in_use = true;
   memset (&disk_inode.arr, 0, sizeof (disk_inode.arr));
   inode_write_to_table (inumber, &disk_inode);
   return true; //THIS CANT FAIL
@@ -289,11 +290,19 @@ inode_read_at (struct inode *inode, void *buffer_, off_t size, off_t offset)
       cache_sector_read (sector_idx, buffer + bytes_read, 
                          chunk_size, sector_ofs);
 
-
       /* Advance. */
       size -= chunk_size;
       offset += chunk_size;
       bytes_read += chunk_size;
+    }
+  
+  /* Read ahead. */
+  /* Offset at start of next bock. */
+  offset -= offset % BLOCK_SECTOR_SIZE;
+  if (offset < inode->data.length)
+    {
+      block_sector_t sector_idx = byte_to_sector (inode, offset);
+      cache_sector_fetch_async (sector_idx);
     }
 
   return bytes_read;

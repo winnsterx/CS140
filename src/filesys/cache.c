@@ -6,6 +6,7 @@
 #include "filesys/filesys.h"
 #include "lib/kernel/bitmap.h"
 #include "lib/kernel/hash.h"
+#include "threads/malloc.h"
 #include "threads/synch.h"
 #include "threads/thread.h"
 
@@ -39,14 +40,23 @@ struct cache_entry
     uint8_t data[BLOCK_SECTOR_SIZE];
   };
 
+struct fetch_struct
+  {
+    block_sector_t sector;
+    struct list_elem elem;
+  };
+
 static struct cache_entry cache_entries[NUM_CACHE_SECTORS];
 static struct lock cache_lock;
+static struct semaphore cache_fetch_sem;
+static struct list cache_fetch_list;
 static unsigned cur_index;
 static bool done;
 
 static struct cache_entry *cache_lookup (unsigned, bool);
 static void cache_flush (void);
 static void cache_flush_loop (void *);
+static void cache_fetch_loop (void *);
 static void cache_sector_cr (unsigned, bool);
 static struct cache_entry *cache_get_entry (unsigned);
 static unsigned cache_hash_func (const struct hash_elem *, void *);
@@ -71,6 +81,8 @@ cache_init (void)
   ASSERT (success);
   lock_init (&cache_lock);
   list_init (&cache_free_list);
+  list_init (&cache_fetch_list);
+  sema_init (&cache_fetch_sem, 0);
   cur_index = 0;
   for (unsigned i = 0; i < NUM_CACHE_SECTORS; i++)
     {
@@ -80,7 +92,8 @@ cache_init (void)
     }
 
   done = false;
-  thread_create ("cache_loop", PRI_MAX, cache_flush_loop, (void *) &done);
+  thread_create ("cache_loop", PRI_MAX, cache_flush_loop, NULL);
+  thread_create ("fetch_loop", PRI_MAX, cache_fetch_loop, NULL);
 }
 
 /* Writes dirty sectors and frees all resources. */
@@ -122,13 +135,18 @@ cache_sector_write (unsigned sector, const void *buffer,
   lock_release (&ce->lock);
 }
 
+/* Schedules an asynchronous fetch of block sector SECTOR and returns
+   immediately. */
 void
-cache_sector_fetch (unsigned sector)
+cache_sector_fetch_async (unsigned sector)
 {
-  /* Only a small chance that the sector will be evicted
-     if the current thread seeks to read it next. */
-  struct cache_entry *ce = cache_get_entry (sector);
-  lock_release (&ce->lock);
+  struct fetch_struct *fs = malloc (sizeof (struct fetch_struct));
+  /* Being unable to prefetch is not critical. */
+  if (fs == NULL)
+    return;
+  fs->sector = sector;
+  list_push_back (&cache_fetch_list, &fs->elem);
+  sema_up (&cache_fetch_sem);
 } 
 
 /* Checks is a sector is in the cache. If so, it moves it from
@@ -235,6 +253,24 @@ cache_evict (void)
   return ce;
 }
 
+/* Waits for prefetch requests to be queued, then fetches the requested
+   sectors before waiting again. Should be run in a high priority thread
+   to ensure executation before CACHE_SECTOR_PREFETCH_ASYNC's caller
+   attempts to fetch itself. */
+static void
+cache_fetch_loop (void * aux UNUSED)
+{
+  while (true)
+    {
+      sema_down (&cache_fetch_sem);
+      struct list_elem *e = list_pop_front (&cache_fetch_list);
+      struct fetch_struct *fs = list_entry (e, struct fetch_struct, elem);
+      struct cache_entry *ce = cache_get_entry (fs->sector);
+      free (fs);
+      lock_release (&ce->lock);
+    }
+}
+
 /* Writes back all dirty cache_entries to the disk and marks them
    clean. */
 static void
@@ -256,9 +292,9 @@ cache_flush (void)
 /* Thread function that flushes the cache every 30 seconds. This
    should run at high priority to ensure timely flushes. */
 static void
-cache_flush_loop (void *done)
+cache_flush_loop (void *aux UNUSED)
 {
-  while (!*(bool *) done)
+  while (!done)
     {
       cache_flush ();
       timer_msleep (30 * 1000);
