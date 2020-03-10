@@ -33,10 +33,14 @@ struct inode
   {
     struct list_elem elem;              /* Element in inode list. */
     unsigned inumber;                   /* inumber in inode table. */
+    struct lock open_lock;
     int open_cnt;                       /* Number of openers. */
     bool removed;                       /* True if deleted, false otherwise. */
+    struct lock deny_write_lock;
     int deny_write_cnt;                 /* 0: writes ok, >0: deny writes. */
+    struct lock data_lock;
     struct inode_disk data;             /* Inode content. */
+    struct lock fixup_lock;
   };
 
 /* Keeps state while sequentially initializing
@@ -51,7 +55,6 @@ struct create_seq_state
   };
 
 #define INODES_PER_SECTOR (BLOCK_SECTOR_SIZE / sizeof (struct inode_disk))
-static struct lock inumber_lock;
 
 static unsigned inumber_to_ofs (inumber_t);
 static block_sector_t inumber_to_sector (inumber_t);
@@ -67,12 +70,17 @@ static void inode_release_sectors (struct inode *);
    returns the same `struct inode'. */
 static struct list open_inodes;
 
+static struct lock open_inodes_lock;
+
+static struct lock inumber_lock;
+
 /* Initializes the inode module. */
 void
 inode_init (void) 
 {
   list_init (&open_inodes);
   lock_init (&inumber_lock);
+  lock_init (&open_inodes_lock);
 }
 
 /* Allocates the first available inumber from the inode table,
@@ -179,6 +187,7 @@ inode_open (inumber_t inumber)
   struct inode *inode;
 
   /* Check whether this inode is already open. */
+  lock_acquire (&open_inodes_lock);
   for (e = list_begin (&open_inodes); e != list_end (&open_inodes);
        e = list_next (e)) 
     {
@@ -186,6 +195,7 @@ inode_open (inumber_t inumber)
       if (inode->inumber == inumber) 
         {
           inode_reopen (inode);
+          lock_release (&open_inodes_lock);
           return inode; 
         }
     }
@@ -193,19 +203,30 @@ inode_open (inumber_t inumber)
   /* Allocate memory. */
   inode = malloc (sizeof *inode);
   if (inode == NULL)
-    return NULL;
+    {
+      lock_release (&open_inodes_lock);
+      return NULL;
+    }
 
   /* Initialize. */
   list_push_front (&open_inodes, &inode->elem);
+  lock_init (&inode->open_lock);
+  lock_init (&inode->deny_write_lock);
+  lock_init (&inode->data_lock);
+  lock_init (&inode->fixup_lock);
+  /* Prevent a premature reopen. */
+  lock_acquire (&inode->open_lock);
+  lock_release (&open_inodes_lock);
   inode->inumber = inumber;
-  inode->open_cnt = 1;
   inode->deny_write_cnt = 0;
   inode->removed = false;
   
   block_sector_t sector = inumber_to_sector (inumber);
   off_t ofs = inumber_to_ofs (inumber);
-  cache_sector_read (sector, &inode->data, sizeof inode->data, ofs);
+  cache_sector_read (sector, &inode->data, sizeof inode->data, ofs);  
 
+  inode->open_cnt = 1;
+  lock_release (&inode->open_lock);
   return inode;
 }
 
@@ -214,7 +235,11 @@ struct inode *
 inode_reopen (struct inode *inode)
 {
   if (inode != NULL)
-    inode->open_cnt++;
+    {
+      lock_acquire (&inode->open_lock);
+      inode->open_cnt++;
+      lock_release (&inode->open_lock);
+    }
   return inode;
 }
 
@@ -236,11 +261,15 @@ inode_close (struct inode *inode)
     return;
 
   /* Release resources if this was the last opener. */
-  if (--inode->open_cnt == 0)
+  lock_acquire (&inode->open_lock);
+  bool last = --inode->open_cnt == 0;
+  lock_release (&inode->open_lock);
+  if (last)
     {
       /* Remove from inode list and release lock. */
+      lock_acquire (&open_inodes_lock);
       list_remove (&inode->elem);
- 
+      lock_release (&open_inodes_lock);
       /* Deallocate blocks if removed. */
       if (inode->removed) 
         {
@@ -319,7 +348,6 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
 {
   const uint8_t *buffer = buffer_;
   off_t bytes_written = 0;
-  // NEEDS SYNC FOR SIMULTANEOUS READ/WRITE, DO LATER when getting rid ofglobal lock:70
 
   if (inode->deny_write_cnt)
     return 0;
@@ -335,18 +363,22 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
       /* Number of bytes to actually write into this sector. */
       int chunk_size = size < sector_left ? size : sector_left;
 
+      // MAKE SURE A SECTOR CANT BE FIXEDUP TWICE
       /* Disk sector to write to. */
       block_sector_t sector_idx = byte_to_sector (inode, offset);
       
       cache_sector_write (sector_idx, buffer + bytes_written,
                           chunk_size, sector_ofs);
     
-      // POTENTIAL SYNCH ISSUE
+      lock_acquire (&inode->data_lock);
       if (offset + chunk_size > inode->data.length)
         {
           inode->data.length = offset + chunk_size;
           inode_write_to_table (inode->inumber, &inode->data);
+          lock_release (&inode->data_lock);
         }
+      else
+        lock_release (&inode->data_lock);
       
       /* Advance. */
       size -= chunk_size;
@@ -362,7 +394,9 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
 void
 inode_deny_write (struct inode *inode) 
 {
+  lock_acquire (&inode->deny_write_lock);
   inode->deny_write_cnt++;
+  lock_release (&inode->deny_write_lock);
   ASSERT (inode->deny_write_cnt <= inode->open_cnt);
 }
 
@@ -374,7 +408,10 @@ inode_allow_write (struct inode *inode)
 {
   ASSERT (inode->deny_write_cnt > 0);
   ASSERT (inode->deny_write_cnt <= inode->open_cnt);
+ 
+  lock_acquire (&inode->deny_write_lock);
   inode->deny_write_cnt--;
+  lock_release (&inode->deny_write_lock);
 }
 
 /* Returns the length, in bytes, of INODE's data. */
@@ -473,6 +510,7 @@ sector_fixup (block_sector_t *sector)
   return true;
 }  
 
+
 /* Gets a sector number from an index sector FROM_SECTOR,
    at index INDEX. Allocates and writes back a sector number 
    if that index of FROM_SECTOR had not previously been allocated.
@@ -481,15 +519,22 @@ static bool
 sector_fixup_disk (block_sector_t from_sector, block_sector_t *to_sector, 
                    size_t index)
 {
+  /* Slightly heavy-handed to lock the entire sector, but we need
+     to prevent double allocations for the same index in a sector. */
+  cache_sector_lock (from_sector);
   cache_sector_read (from_sector, to_sector, sizeof (unsigned), 
                      index * sizeof (unsigned));
   block_sector_t prev_sector = *to_sector;
   if (!sector_fixup (to_sector))
-    return false;
+    {
+      cache_sector_unlock (from_sector);
+      return false;
+    }
+ 
   if (prev_sector == 0)
     cache_sector_write (from_sector, to_sector, sizeof (unsigned), 
                         index * sizeof (unsigned));
-
+  cache_sector_unlock (from_sector);
   return true;
 }
 
@@ -508,8 +553,13 @@ sector_fixup_depth (struct inode *inode, block_sector_t start_index,
     arr_index /= NUM_PER_SECTOR;
   
   arr_index += start_index;
+  lock_acquire (&inode->fixup_lock);
   if (!sector_fixup (&inode->data.arr[arr_index]))
-    return -1;
+    {
+      lock_release (&inode->fixup_lock);
+      return -1;
+    }
+  lock_release (&inode->fixup_lock);
   unsigned sector_to = inode->data.arr[arr_index];
   for (unsigned i = 0; i < depth; i++)
     {
@@ -522,11 +572,12 @@ sector_fixup_depth (struct inode *inode, block_sector_t start_index,
         return -1;
     }
 
+  lock_acquire (&inode->data_lock);
   inode_write_to_table (inode->inumber, &inode->data);
+  lock_release (&inode->data_lock);
   return sector_to;
 }
       
-// NEED SYNCH?
 // HOW YO FREE UNUSED PAGES ON RETURN?
 
 /* Returns the block device sector that contains byte offset POS
@@ -537,7 +588,8 @@ static block_sector_t
 byte_to_sector (struct inode *inode, off_t pos)
 {
   ASSERT (inode != NULL);
-
+  // NEED TO LOCK INDEX, to not want to block other accesses on IO
+   // fuck. What if different indeces need same block
   unsigned index = pos / BLOCK_SECTOR_SIZE;
   if (index < DIRECT_LIMIT)
     return sector_fixup_depth (inode, 0, 0, index, 0);

@@ -21,18 +21,19 @@ struct hash cache_hash;
    ELEM as a cache_entry. */
 struct cache_entry_stub
   {
-    unsigned sector;
+    block_sector_t sector;
     struct hash_elem elem;
   };
 
 struct cache_entry
   {
-    unsigned sector;
+    block_sector_t sector;
     union
       {
         struct hash_elem hash_elem;
         struct list_elem list_elem;
       };
+    bool externally_locked;
     struct lock lock;
     bool accessed;
     bool dirty;
@@ -40,11 +41,13 @@ struct cache_entry
     uint8_t data[BLOCK_SECTOR_SIZE];
   };
 
+
 struct fetch_struct
   {
     block_sector_t sector;
     struct list_elem elem;
   };
+
 
 static struct cache_entry cache_entries[NUM_CACHE_SECTORS];
 static struct lock cache_lock;
@@ -88,6 +91,7 @@ cache_init (void)
     {
       struct cache_entry *ce = &cache_entries[i];
       lock_init (&ce->lock);
+      ce->externally_locked = false;
       list_push_back (&cache_free_list, &ce->list_elem);
     }
 
@@ -117,7 +121,8 @@ cache_sector_read (unsigned sector, void *buffer,
   struct cache_entry *ce = cache_get_entry (sector);
   ce->accessed = true;
   memcpy (buffer, &ce->data[offset], size);
-  lock_release (&ce->lock);
+  if (!ce->externally_locked)
+    lock_release (&ce->lock);
 }
 
 /* If the SECTOR is not present in the cache, SECTOR is read into the cache.
@@ -132,11 +137,35 @@ cache_sector_write (unsigned sector, const void *buffer,
   ce->accessed = true;
   ce->dirty = true;
   memcpy (&ce->data[offset], buffer, size);
+  if (!ce->externally_locked)
+    lock_release (&ce->lock);
+}
+
+void
+cache_sector_lock (unsigned sector)
+{
+  /* This locks the sector. */
+  struct cache_entry *ce = cache_get_entry (sector);
+  ASSERT (!ce->externally_locked);
+  ce->externally_locked = true;
+}
+
+
+void
+cache_sector_unlock (unsigned sector)
+{
+  struct cache_entry *ce;
+  lock_acquire (&cache_lock);
+  ce = cache_lookup (sector, false);
+  lock_release (&cache_lock);
+  if (ce == NULL)
+    return;
+  ce->externally_locked = false;
   lock_release (&ce->lock);
 }
 
 /* Schedules an asynchronous fetch of block sector SECTOR and returns
-   immediately. */
+   immediately. Should not be called on a locked sector. */
 void
 cache_sector_fetch_async (unsigned sector)
 {
@@ -166,12 +195,14 @@ cache_sector_add (unsigned sector)
   ce->accessed = true;
   ce->dirty = true;
   memset (&ce->data[0], 0, BLOCK_SECTOR_SIZE);
-  lock_release (&ce->lock);
+  if (!ce->externally_locked)
+    lock_release (&ce->lock);
 }
 
 /* Used when freeing a sector, to prevent a deleted sector that is only
    present in cache from ever being writtien to the disk. This is just
-   like closing a sector, but we set dirty to false, and free it. */
+   like closing a sector, but we set dirty to false, and free it. Should
+   not be called on a locked sector. */
 void
 cache_sector_remove (unsigned sector)
 {
@@ -227,7 +258,8 @@ cache_evict (void)
     {
       hash_delete (&cache_closed_hash, e);
       ce = hash_entry (e, struct cache_entry, hash_elem);
-      lock_acquire (&ce->lock);
+      if (!lock_held_by_current_thread (&ce->lock))
+        lock_acquire (&ce->lock);
       return ce;
     } 
   
@@ -236,8 +268,8 @@ cache_evict (void)
       cur_index++;
       cur_index %= NUM_CACHE_SECTORS;
       ce = &cache_entries[cur_index];
-      
-      if (lock_try_acquire (&ce->lock))
+      if (!lock_held_by_current_thread (&ce->lock) && 
+          lock_try_acquire (&ce->lock))
         {
           if (ce->accessed)
             {
@@ -313,7 +345,8 @@ cache_get_entry (unsigned sector)
   ce = cache_lookup (sector, false);
   if (ce != NULL)
     {
-      lock_acquire (&ce->lock);
+      if (!lock_held_by_current_thread (&ce->lock))
+        lock_acquire (&ce->lock);
       lock_release (&cache_lock);
       return ce;
     }
@@ -323,7 +356,8 @@ cache_get_entry (unsigned sector)
     {
       hash_delete (&cache_closed_hash, &ce->hash_elem);
       hash_insert (&cache_hash, &ce->hash_elem);
-      lock_acquire (&ce->lock);
+      if (!lock_held_by_current_thread (&ce->lock))
+        lock_acquire (&ce->lock);
       lock_release (&cache_lock);
       return ce;
     }
