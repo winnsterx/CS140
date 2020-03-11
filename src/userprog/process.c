@@ -358,10 +358,8 @@ load (const char *command, void (**eip) (void), void **esp)
   process_activate ();
   
   /* Open executable file. */
-  lock_acquire (&thread_filesys_lock);
   file = filesys_open (t->name);
   t->exec_file = file;
-  lock_release (&thread_filesys_lock);
     if (file == NULL) 
     {
       printf ("load: %s: open failed\n", t->name);
@@ -370,7 +368,6 @@ load (const char *command, void (**eip) (void), void **esp)
   file_deny_write (file);
   
   /* Read and verify executable header. */
-  lock_acquire (&thread_filesys_lock);
   if (file_read (file, &ehdr, sizeof ehdr) != sizeof ehdr
       || memcmp (ehdr.e_ident, "\177ELF\1\1\1", 7)
       || ehdr.e_type != 2
@@ -382,14 +379,12 @@ load (const char *command, void (**eip) (void), void **esp)
       printf ("load: %s: error loading executable\n", t->name);
       goto done; 
     }
-  lock_release (&thread_filesys_lock);
   
   /* Read program headers. */
   file_ofs = ehdr.e_phoff;
   for (i = 0; i < ehdr.e_phnum; i++) 
     {
       struct Elf32_Phdr phdr;
-      lock_acquire (&thread_filesys_lock);
       if (file_ofs < 0 || file_ofs > file_length (file))
         goto done;
       file_seek (file, file_ofs);
@@ -397,7 +392,6 @@ load (const char *command, void (**eip) (void), void **esp)
       if (file_read (file, &phdr, sizeof phdr) != sizeof phdr)
         goto done;
       
-      lock_release (&thread_filesys_lock);
       file_ofs += sizeof phdr;
       switch (phdr.p_type) 
         {
@@ -459,11 +453,7 @@ load (const char *command, void (**eip) (void), void **esp)
   success = true;
 
  done:
- 
- /* We arrive here whether the load is successful or not. */
- if (lock_held_by_current_thread (&thread_filesys_lock))
-   lock_release (&thread_filesys_lock);
-  
+ /* We arrive here whether the load is successful or not. */ 
   return success;
 }
 
@@ -481,13 +471,8 @@ validate_segment (const struct Elf32_Phdr *phdr, struct file *file)
     return false; 
 
   /* p_offset must point within FILE. */
-  lock_acquire (&thread_filesys_lock);
   if (phdr->p_offset > (Elf32_Off) file_length (file)) 
-    {
-      lock_release (&thread_filesys_lock);
-      return false;
-    }
-  lock_release (&thread_filesys_lock);
+    return false;
 
   /* p_memsz must be at least as big as p_filesz. */
   if (phdr->p_memsz < phdr->p_filesz) 
@@ -543,9 +528,7 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
   ASSERT (pg_ofs (upage) == 0);
   ASSERT (ofs % PGSIZE == 0);
  
-  lock_acquire (&thread_filesys_lock);
   file_seek (file, ofs);
-  lock_release (&thread_filesys_lock);
    
   while (read_bytes > 0 || zero_bytes > 0) 
     {
@@ -561,15 +544,12 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
         return false;
 
       /* Load this page. */
-      lock_acquire (&thread_filesys_lock);
       if (file_read (file, kpage, page_read_bytes) != (int) page_read_bytes)
         {
-          lock_release (&thread_filesys_lock);
           palloc_free_page (kpage);
           return false; 
         }
 
-      lock_release (&thread_filesys_lock);
       memset (kpage + page_read_bytes, 0, page_zero_bytes);
 
       /* Add the page to the process's address space. */

@@ -163,9 +163,7 @@ create (const char *name, unsigned initial_size)
     thread_exit ();
 
   bool success;
-  lock_acquire (&thread_filesys_lock);
   success = filesys_create (name, initial_size);
-  lock_release (&thread_filesys_lock);
 
   return success;
 }
@@ -177,9 +175,7 @@ remove (const char *name)
     thread_exit ();
 
   bool success;
-  lock_acquire (&thread_filesys_lock);
   success = filesys_remove (name);
-  lock_release (&thread_filesys_lock);
  
   return success;
 }
@@ -190,9 +186,7 @@ open (const char *name)
   if (!validate_name (name))
     thread_exit ();
 
-  lock_acquire (&thread_filesys_lock);
   struct file *file = filesys_open (name);
-  lock_release (&thread_filesys_lock);
   if (file == NULL)
     return -1;
 
@@ -226,9 +220,7 @@ filesize (int fd)
   if (fd_struct == NULL)
     return -1;
   
-  lock_acquire (&thread_filesys_lock);
   int length = file_length (fd_struct->file);
-  lock_release (&thread_filesys_lock);
 
   return length;
 }
@@ -258,9 +250,7 @@ read (int fd, void *buffer, unsigned length)
     return -1;
   
   int result;
-  lock_acquire (&thread_filesys_lock);
   result = file_read (fd_struct->file, buffer, length);
-  lock_release (&thread_filesys_lock);
   
   return result;
 }
@@ -285,9 +275,7 @@ write (int fd, const void *buffer, unsigned length)
     return -1;
 
   int result;
-  lock_acquire (&thread_filesys_lock);
   result = file_write (fd_struct->file, buffer, length);
-  lock_release (&thread_filesys_lock);
 
   return result;
 }
@@ -299,9 +287,7 @@ seek (int fd, unsigned position)
   if (fd_struct == NULL)
     return;
 
-  lock_acquire (&thread_filesys_lock);
   file_seek (fd_struct->file, position);
-  lock_release (&thread_filesys_lock);
 }
 
 static unsigned
@@ -312,9 +298,7 @@ tell (int fd)
     thread_exit ();
   
   unsigned pos;
-  lock_acquire (&thread_filesys_lock);
   pos = file_tell (fd_struct->file);
-  lock_release (&thread_filesys_lock);
 
   return pos;
 }
@@ -469,8 +453,6 @@ static void
 free_fd_struct_file (struct fd_struct *fd_struct)
 {
   list_remove (&fd_struct->elem);
-  lock_acquire (&thread_filesys_lock);
   file_close (fd_struct->file);
-  lock_release (&thread_filesys_lock);
 }
 

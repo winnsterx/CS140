@@ -67,7 +67,7 @@ static bool cache_less_func (const struct hash_elem *,
 
 /* Sets up initial list of free cache_entries, allocates CACHE_HASH. 
    Initializes CACHE_LOCK, launches thread that periodically flushes
-   cache. */
+   cache, as well as the thread that handles prefetch requests. */
 void 
 cache_init (void)
 {
@@ -140,7 +140,8 @@ cache_sector_write (unsigned sector, const void *buffer,
     rw_lock_release_r (&ce->rw_lock);
 }
 
-/* Keep sectors locked for as short a time as possible,
+/* Locks a sector in the sector cannot be evicted or accessed while
+   locked. Keep sectors locked for as short a time as possible,
    as a locked sector can stall period cache flushing. */
 void
 cache_sector_lock (unsigned sector)
@@ -150,7 +151,7 @@ cache_sector_lock (unsigned sector)
   rw_lock_promote (&ce->rw_lock);
 }
 
-
+/* Unlocks a sector. The sector is then accessible and evictable. */
 void
 cache_sector_unlock (unsigned sector)
 {
@@ -176,8 +177,8 @@ cache_sector_fetch_async (unsigned sector)
   sema_up (&cache_fetch_sem);
 } 
 
-/* Checks is a sector is in the cache. If so, it moves it from
-   CACHE_HASH to CACHE_CLOSED_HASH. */
+/* Marks a sector as closed, making it considered for eviction
+   earlier. */
 void
 cache_sector_close (unsigned sector)
 {
@@ -197,16 +198,16 @@ cache_sector_add (unsigned sector)
     rw_lock_release_r (&ce->rw_lock);
 }
 
-/* Used when freeing a sector, to prevent a deleted sector that is only
-   present in cache from ever being writtien to the disk. This is just
-   like closing a sector, but we set dirty to false, and free it. Should
-   not be called on a locked sector. */
+/* Closes a sector, making it considered earlier for eviction. Marks
+   the sector as clean, so the sector will not be written to the disk
+   on eviction. */
 void
 cache_sector_remove (unsigned sector)
 {
   cache_sector_cr (sector, true);
 }
 
+/* Helper function that handles closing and removing of sectors. */
 static void
 cache_sector_cr (unsigned sector, bool deleted)
 {
@@ -217,10 +218,7 @@ cache_sector_cr (unsigned sector, bool deleted)
       hash_delete (&cache_hash, &ce->hash_elem);
       hash_insert (&cache_closed_hash, &ce->hash_elem);
       if (deleted)
-        {
-          ce->dirty = false;
-          /* Code to free sector */
-        }
+        ce->dirty = false;
     }
   lock_release (&cache_lock);
 }
