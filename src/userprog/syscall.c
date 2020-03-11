@@ -77,6 +77,7 @@ close_all_files (void)
 static void
 syscall_handler (struct intr_frame *f UNUSED) 
 {
+  printf ("We are in syscall handler. \n");
   if (!validate_range (f->esp, 4 * sizeof (int)))
     thread_exit ();
  
@@ -128,6 +129,21 @@ syscall_handler (struct intr_frame *f UNUSED)
       case SYS_CLOSE:
         close (*(int *) arg1);
         break;
+      case SYS_CHDIR:
+	chdir (*(const char **) arg1);
+	break;
+      case SYS_MKDIR:
+	mkdir (*(const char **) arg1);
+	break;
+      case SYS_READDIR:
+	readdir (*(int *) arg1, *(char *)arg2);
+	break;
+      case SYS_ISDIR:
+	isdir (*(int *) arg1);
+	break;
+      case SYS_INUMBER:
+	inumber (*(int *) arg1);
+	break;
       default:
         thread_exit ();
     }
@@ -152,7 +168,7 @@ exec (const char *name)
 {
   if (!validate_name (name))
     thread_exit ();
-
+  printf ("Name is exec: %c\n", *name);
   return process_execute (name);
 }
 
@@ -165,6 +181,7 @@ wait (tid_t pid)
 static bool
 create (const char *name, unsigned initial_size)
 {
+  printf ("Name in create: %c\n", *name);
   if (!validate_name (name))
     thread_exit ();
 
@@ -179,6 +196,7 @@ create (const char *name, unsigned initial_size)
 static bool
 remove (const char *name)
 {
+  printf ("Name in remove: %c\n", *name);
   if (!validate_name (name))
     thread_exit ();
 
@@ -348,6 +366,93 @@ get_user_byte (const uint8_t *uaddr)
 
   return result;
 }
+
+/* Changes the current working directory of the process to dir, 
+   which may be relative or absolute. Returns true if successful, 
+   false on failure. */
+static bool
+chdir (const char *dir)
+{
+  if (!validate_name (dir))
+    thread_exit ();
+
+  struct dir *next = dir_fetch (dir);
+  if (next == NULL)
+    return false; 
+  
+  thread_current ()->cwd = next;
+  return true;
+} 
+
+/* Creates the directory named dir, which may be relative or 
+absolute. Returns true if successful, false on failure. Fails if 
+dir already exists or if any directory name in dir, besides the 
+last, does not already exist. 
+That is, mkdir("/a/b/c") succeeds only if "/a/b" 
+already exists and "/a/b/c" does not. */
+static bool
+mkdir (const char *name)
+{
+  if (!validate_name (dir))
+    thread_exit ();
+  
+  /* 0 is reserved for the free map. */
+  inumber_t inumber = 0;
+  if (name == NULL || strlen (name) == 0) 
+    return false;
+
+  char *file = dir_file (name);
+  char *path = dir_path (name); /* NEED to free PATH - malloc-ed */
+  if (file == NULL || path == NULL) 
+    return false;
+
+  struct dir *dir = dir_fetch (path);
+
+  bool success = (dir != NULL
+                  && inode_assign_inumber (&inumber)
+                  && dir_create (inumber, dir_get_inode (dir)->inumber)
+                  && dir_add (dir, file, inumber));
+  if (!success && inumber != 0) 
+    inode_release_inumber (inumber);
+  free (path);
+  dir_close (dir);
+
+  return success;  
+}
+
+static bool
+readdir (int fd, char *name)
+{
+  if (!validate_name (dir))
+    thread_exit ();
+  
+  char dest[READDIR_MAX_LEN + 1];
+  
+}
+
+static bool
+isdir (int fd) 
+{
+  struct fd_struct *fd_struct = find_fd_struct (fd);
+  if (fd_struct == NULL || fd_struct->fd == NULL)
+    return false;
+
+  if (fd_struct->fd->is_dir != true)
+    return false;
+  
+  return true; 
+}
+ 
+static int
+inumber (int fd)
+{
+  struct fd_struct *fd_struct = find_fd_struct (fd);
+  if (fd_struct == NULL || fd_struct->file == NULL)
+    return -1;
+  
+  return fd_struct->file->inode->inumber; 
+}
+
 
 /* Checks whether adding SIZE to UADDR would overflow UADDR. If not, size
    is returned. Otherwize, the largest possible size without overflow

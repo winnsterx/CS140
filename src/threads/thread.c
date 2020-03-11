@@ -104,6 +104,7 @@ static bool ready_is_empty (void);
 void
 thread_init (void) 
 {
+  printf ("HELLO, this is thread_init \n");
   ASSERT (intr_get_level () == INTR_OFF);
 
   lock_init (&tid_lock);
@@ -531,6 +532,7 @@ is_thread (struct thread *t)
 static void
 init_thread (struct thread *t, const char *name, int priority)
 {
+  printf ("HELLO, this is init_thread\n");
   enum intr_level old_level;
 
   ASSERT (t != NULL);
@@ -543,12 +545,14 @@ init_thread (struct thread *t, const char *name, int priority)
   t->stack = (uint8_t *) t + PGSIZE;
   t->priority = priority;
   t->magic = THREAD_MAGIC; 
-
+  
+  printf ("HELLO, this is before setting cwd\n");
 #ifdef USERPROG
   list_init (&t->child_list);
   list_init (&t->fd_list);
   t->exec_file = NULL;
   t->cwd = dir_open_root ();
+  printf ("HELLO, setting t->cwd = dir_root \n");
 #endif
 
   old_level = intr_disable ();

@@ -1,6 +1,7 @@
 #include "filesys/inode.h"
 #include <list.h>
 #include <debug.h>
+#include <stdio.h>
 #include <round.h>
 #include <string.h>
 #include "filesys/cache.h"
@@ -175,6 +176,8 @@ inode_create_seq (inumber_t inumber, size_t *sectors,
 struct inode *
 inode_open (inumber_t inumber)
 {
+  printf ("Size of open_inodes: %zu\n", list_size (&open_inodes));
+  printf ("HELLO, inode_open\n");
   struct list_elem *e;
   struct inode *inode;
 
@@ -188,13 +191,14 @@ inode_open (inumber_t inumber)
           inode_reopen (inode);
           return inode; 
         }
+      printf ("HELLO, Are we even checking in the for loop \n");
     }
 
   /* Allocate memory. */
   inode = malloc (sizeof *inode);
   if (inode == NULL)
     return NULL;
-
+  printf ("HELLO, allocated memo\n");
   /* Initialize. */
   list_push_front (&open_inodes, &inode->elem);
   inode->inumber = inumber;

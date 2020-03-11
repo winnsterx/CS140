@@ -48,6 +48,7 @@ filesys_done (void)
 bool
 filesys_create (const char *name, off_t initial_size) 
 {
+  printf ("In filesys_create");
   /* 0 is reserved for the free map. */
   inumber_t inumber = 0;
   block_sector_t inode_sector = 0;
@@ -79,6 +80,7 @@ struct file *
 filesys_open (const char *name)
 {
   //struct dir *dir = dir_open_root ();
+  printf ("In filesys_open \n");
   if (name == NULL || strlen (name) == 0) 
     return false;
   char *file = dir_file (name);
@@ -102,6 +104,7 @@ filesys_open (const char *name)
 bool
 filesys_remove (const char *name) 
 {
+  printf ("In filesys_remove \n");
   if (name == NULL || strlen (name) == 0) 
     return false;
   char *file = dir_file (name);
