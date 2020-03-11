@@ -41,7 +41,6 @@ struct inode
     struct lock deny_write_lock;
     int deny_write_cnt;                 /* 0: writes ok, >0: deny writes. */
     struct lock data_lock;
-    struct lock fixup_lock;
   };
 
 /* Keeps state while sequentially initializing
@@ -121,10 +120,8 @@ void
 inode_release_inumber (inumber_t inumber)
 {
   struct inode_disk disk_inode;
-  block_sector_t sector = inumber_to_sector (inumber);
-  off_t ofs = inumber_to_ofs (inumber);
   memset (&disk_inode, 0, sizeof (disk_inode));
-  cache_sector_write (sector, &disk_inode, sizeof (disk_inode), ofs);
+  inode_write_to_table (inumber, &disk_inode);
 }
 
 /* Initializes an inode with LENGTH bytes of data and
@@ -218,7 +215,6 @@ inode_open (inumber_t inumber)
   lock_init (&inode->open_lock);
   lock_init (&inode->deny_write_lock);
   lock_init (&inode->data_lock);
-  lock_init (&inode->fixup_lock);
   /* Prevent a premature reopen. */
   lock_acquire (&inode->open_lock);
   lock_release (&open_inodes_lock);
@@ -274,8 +270,8 @@ inode_close (struct inode *inode)
       /* Deallocate blocks if removed. */
       if (inode->removed) 
         {
+          inode_release_sectors (inode);
           inode_release_inumber (inode->inumber);
-          inode_release_sectors (inode); 
         }
      
       free (inode); 
@@ -369,7 +365,6 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
 
       /* Disk sector to write to. */
       block_sector_t sector_idx = byte_to_sector (inode, offset);
-      
       cache_sector_write (sector_idx, buffer + bytes_written,
                           chunk_size, sector_ofs);
     
@@ -542,21 +537,21 @@ sector_fixup_disk (block_sector_t from_sector, block_sector_t *to_sector,
 {
   /* Slightly heavy-handed to lock the entire sector, but we need
      to prevent double allocations for the same index in a sector. */
-  //cache_sector_lock (from_sector);
+  cache_sector_lock (from_sector);
   cache_sector_read (from_sector, to_sector, sizeof (unsigned), 
                      index * sizeof (unsigned));
   if (*to_sector == 0)
     {
       if (!free_map_allocate (1, to_sector))
         {
-          //cache_sector_unlock
+          cache_sector_unlock (from_sector);
           return false;
         }
       cache_sector_add (*to_sector);
       cache_sector_write (from_sector, to_sector, sizeof (unsigned), 
                           index * sizeof (unsigned));
     }
-  //cache_sector_unlock (from_sector);
+  cache_sector_unlock (from_sector);
   return true;
 }
 
@@ -576,14 +571,10 @@ sector_fixup_depth (struct inode *inode, block_sector_t start_index,
   
   arr_index += start_index;
   struct inode_disk disk_inode;
-  lock_acquire (&inode->fixup_lock);
   if (!sector_fixup_arr (inode, &disk_inode, arr_index))
-    {
-      lock_release (&inode->fixup_lock);
-      return -1;
-    }
+    return -1;
+  
   unsigned sector_to = disk_inode.arr[arr_index];
-  lock_release (&inode->fixup_lock);
   for (unsigned i = 0; i < depth; i++)
     {
       unsigned sector_index = index;
@@ -641,7 +632,6 @@ sector_deallocate_disk (block_sector_t from_sector, unsigned depth)
   /* Skip unassigned entries. */
   if (from_sector == 0)
     return;
-
   if (depth-- == 0)
     {
       sector_deallocate (from_sector);

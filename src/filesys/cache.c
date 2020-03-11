@@ -120,7 +120,8 @@ cache_sector_read (unsigned sector, void *buffer,
   struct cache_entry *ce = cache_get_entry (sector);
   ce->accessed = true;
   memcpy (buffer, &ce->data[offset], size);
-  rw_lock_release_r (&ce->rw_lock);
+  if (!rw_lock_held_by_current_thread_w (&ce->rw_lock))
+    rw_lock_release_r (&ce->rw_lock);
 }
 
 /* If the SECTOR is not present in the cache, SECTOR is read into the cache.
@@ -135,7 +136,8 @@ cache_sector_write (unsigned sector, const void *buffer,
   ce->accessed = true;
   ce->dirty = true;
   memcpy (&ce->data[offset], buffer, size);
-  rw_lock_release_r (&ce->rw_lock);
+  if (!rw_lock_held_by_current_thread_w (&ce->rw_lock))
+    rw_lock_release_r (&ce->rw_lock);
 }
 
 /* Keep sectors locked for as short a time as possible,
@@ -143,10 +145,9 @@ cache_sector_write (unsigned sector, const void *buffer,
 void
 cache_sector_lock (unsigned sector)
 {
-  /* This locks the sector. */
+  /* Thread takes a read lock. */
   struct cache_entry *ce = cache_get_entry (sector);
   rw_lock_promote (&ce->rw_lock);
-  rw_lock_acquire_w (&ce->rw_lock);
 }
 
 
@@ -192,7 +193,8 @@ cache_sector_add (unsigned sector)
   ce->accessed = true;
   ce->dirty = true;
   memset (&ce->data[0], 0, BLOCK_SECTOR_SIZE);
-  rw_lock_release_r (&ce->rw_lock);
+  if (!rw_lock_held_by_current_thread_w (&ce->rw_lock))
+    rw_lock_release_r (&ce->rw_lock);
 }
 
 /* Used when freeing a sector, to prevent a deleted sector that is only
@@ -254,8 +256,7 @@ cache_evict (void)
     {
       hash_delete (&cache_closed_hash, e);
       ce = hash_entry (e, struct cache_entry, hash_elem);
-      if (!rw_lock_held_by_current_thread_w (&ce->rw_lock))
-        rw_lock_acquire_w (&ce->rw_lock);
+      rw_lock_acquire_w (&ce->rw_lock);
       return ce;
     } 
   
@@ -284,7 +285,7 @@ cache_evict (void)
 /* Waits for prefetch requests to be queued, then fetches the requested
    sectors before waiting again. Should be run in a high priority thread
    to ensure executation before CACHE_SECTOR_PREFETCH_ASYNC's caller
-   attempts to fetch itself. */
+   attempts to fetch itself. A locked sector should not be fetched. */
 static void
 cache_fetch_loop (void * aux UNUSED)
 {
@@ -345,7 +346,8 @@ cache_get_entry (unsigned sector)
   if (ce != NULL)
     {
       /* Take a read lock to prevent eviction. */
-      rw_lock_acquire_r (&ce->rw_lock);
+      if (!rw_lock_held_by_current_thread_w (&ce->rw_lock))
+        rw_lock_acquire_r (&ce->rw_lock);
       lock_release (&cache_lock);
       return ce;
     }
