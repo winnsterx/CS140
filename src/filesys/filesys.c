@@ -128,7 +128,7 @@ do_format (void)
     cache_sector_add (i);    
   
   free_map_create ();
-  if (!dir_create (ROOT_DIR_INUMBER, 16))
+  if (!dir_create (ROOT_DIR_INUMBER, ROOT_DIR_INUMBER))
     PANIC ("root directory creation failed");
   free_map_close ();
 }
