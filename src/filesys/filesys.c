@@ -48,17 +48,33 @@ filesys_done (void)
 bool
 filesys_create (const char *name, off_t initial_size) 
 {
+  //printf ("create attemt\n");
   /* 0 is reserved for the free map. */
   inumber_t inumber = 0;
   struct dir *dir = dir_open_root ();
-  bool success = (dir != NULL
+  //printf ("root created\n");
+  /*bool success = (dir != NULL
                   && inode_assign_inumber (&inumber)
                   && inode_create (inumber, initial_size)
-                  && dir_add (dir, name, inumber));
+                  && dir_add (dir, name, inumber));*/
+  
+  bool success = inode_assign_inumber (&inumber);
+  if (success)
+   {
+    //printf ("INUMBER: %u\n", inumber);
+    success = inode_create (inumber, initial_size);
+   }
+  if (success)  
+   {
+    //printf ("inoded created\n");
+    success = dir_add (dir, name, inumber);
+   }
+   if (success)
+      //printf ("added to dir\n");
   if (!success && inumber != 0) 
     inode_release_inumber (inumber);
   dir_close (dir);
-
+  //printf ("create failure\n");
   return success;
 }
 
@@ -97,7 +113,7 @@ filesys_remove (const char *name)
 static void
 do_format (void)
 {
-  printf ("Formatting file system...");
+  //printf ("Formatting file system...");
   /* Clear the inode table. */
   
   // TO MANY READS ARE HAPPENING, FIND OUT WHY

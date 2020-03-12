@@ -76,6 +76,8 @@ static struct lock open_inodes_lock;
 
 static struct lock inumber_lock;
 
+
+
 /* Initializes the inode module. */
 void
 inode_init (void) 
@@ -91,27 +93,21 @@ inode_init (void)
 bool
 inode_assign_inumber (inumber_t *inumber)
 {
-  struct inode_disk disk_inode;
-  for (unsigned i = 0; i < INODE_TABLE_SECTORS; i++)
-    {
-      for (unsigned j = 0; j < INODES_PER_SECTOR; j++)
+  for (unsigned i = 0; i < INODES_PER_SECTOR * INODE_TABLE_SECTORS; i++)
+    { 
+      struct inode_disk disk_inode;
+      lock_acquire (&inumber_lock);
+      inode_read_from_table (i, &disk_inode);
+      if (!disk_inode.in_use)
         {
-          lock_acquire (&inumber_lock);
-          cache_sector_read (i, &disk_inode, sizeof disk_inode, 
-                             j * sizeof disk_inode);
-          if (!disk_inode.in_use)
-            {
-              disk_inode.in_use = true;
-              cache_sector_write (i, &disk_inode, sizeof disk_inode, 
-                                  j * sizeof disk_inode);
-              lock_release (&inumber_lock);
-              *inumber = i * INODES_PER_SECTOR + j;
-              return true;
-            }
+          disk_inode.in_use = true;
+          inode_write_to_table (i, &disk_inode);
+          *inumber = i;
           lock_release (&inumber_lock);
+          return true;
         }
-    }
-
+      lock_release (&inumber_lock);
+    } 
   return false;
 }
 
@@ -295,7 +291,6 @@ inode_read_at (struct inode *inode, void *buffer_, off_t size, off_t offset)
 {
   uint8_t *buffer = buffer_;
   off_t bytes_read = 0;
-
   while (size > 0) 
     {
       /* Offset within sector to read from . */
@@ -315,7 +310,6 @@ inode_read_at (struct inode *inode, void *buffer_, off_t size, off_t offset)
       block_sector_t sector_idx = byte_to_sector (inode, offset);
       cache_sector_read (sector_idx, buffer + bytes_read, 
                          chunk_size, sector_ofs);
-
       /* Advance. */
       size -= chunk_size;
       offset += chunk_size;
@@ -333,6 +327,7 @@ inode_read_at (struct inode *inode, void *buffer_, off_t size, off_t offset)
       block_sector_t sector_idx = byte_to_sector (inode, offset);
       cache_sector_fetch_async (sector_idx);
     }
+
 
   return bytes_read;
 }
@@ -383,7 +378,6 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
       offset += chunk_size;
       bytes_written += chunk_size;
     }
-
   return bytes_written;
 }
 
@@ -513,8 +507,9 @@ sector_fixup_arr (struct inode *inode, struct inode_disk *disk_inode,
   inode_read_from_table (inode->inumber, disk_inode);
   if (disk_inode->arr[index] == 0)
     {
-      if (!free_map_allocate (1, &disk_inode->arr[index]))
-        {
+      bool succ = free_map_allocate (1, &disk_inode->arr[index]);
+      if (!succ)
+        { 
           lock_release (&inode->data_lock);
           return false;
         }
@@ -542,7 +537,8 @@ sector_fixup_disk (block_sector_t from_sector, block_sector_t *to_sector,
                      index * sizeof (unsigned));
   if (*to_sector == 0)
     {
-      if (!free_map_allocate (1, to_sector))
+      bool succ = free_map_allocate (1, to_sector);
+      if (!succ)
         {
           cache_sector_unlock (from_sector);
           return false;

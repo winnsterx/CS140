@@ -43,11 +43,12 @@ void cond_broadcast (struct condition *, struct lock *);
 
 struct rw_lock
   {
-    unsigned counter;
+    unsigned counter_r;
+    unsigned counter_w;
+    struct condition cond_r;
+    struct condition cond_rp;
+    struct condition cond_w;
     struct lock lock;
-    struct lock acq_lock;
-    struct condition cond;
-    struct condition promote_cond;
   };
 
 void rw_lock_init (struct rw_lock *);

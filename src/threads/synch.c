@@ -267,69 +267,65 @@ lock_held_by_current_thread (const struct lock *lock)
 void
 rw_lock_init (struct rw_lock *rw_lock)
 {
+  rw_lock->counter_r = 0;
+  rw_lock->counter_w = 0;
+  cond_init (&rw_lock->cond_r);
+  cond_init (&rw_lock->cond_rp);
+  cond_init (&rw_lock->cond_w);
   lock_init (&rw_lock->lock);
-  lock_init (&rw_lock->acq_lock);
-  cond_init (&rw_lock->cond);
-  cond_init (&rw_lock->promote_cond);
-  rw_lock->counter = 0;
 }
 
 void
 rw_lock_acquire_r (struct rw_lock *rw_lock)
 {
-  lock_acquire (&rw_lock->acq_lock);
   lock_acquire (&rw_lock->lock);
-  rw_lock->counter++;
+  while (rw_lock->counter_w > 0)
+    cond_wait (&rw_lock->cond_w, &rw_lock->lock);
+  rw_lock->counter_r++;
   lock_release (&rw_lock->lock);
-  lock_release (&rw_lock->acq_lock);
 }
 
 void
 rw_lock_acquire_w (struct rw_lock *rw_lock)
 {
-  /* Prevent new read acquisitions, since
-     cond_wait will release RW_LOCK->LOCK. */
-  lock_acquire (&rw_lock->acq_lock);
+  ASSERT (!rw_lock_held_by_current_thread_w (rw_lock));
   lock_acquire (&rw_lock->lock);
-  while (rw_lock->counter != 0)
-    cond_wait (&rw_lock->cond, &rw_lock->lock);
-  lock_release (&rw_lock->acq_lock);
+  rw_lock->counter_w++;
+  while (rw_lock->counter_r > 0)
+    cond_wait (&rw_lock->cond_r, &rw_lock->lock);
 }
 
 bool
 rw_lock_try_acquire_r (struct rw_lock *rw_lock)
 {
-  if (!lock_try_acquire (&rw_lock->acq_lock))
-    return false;
-  if (!lock_try_acquire (&rw_lock->acq_lock))
+  while (rw_lock->counter_w == 0)
     {
-      lock_release (&rw_lock->acq_lock);
-      return false;
+      if (lock_try_acquire (&rw_lock->lock))
+        {
+          rw_lock->counter_r++;
+          lock_release (&rw_lock->lock);
+          return true;
+        }
     }
-  rw_lock->counter++;
-  lock_release (&rw_lock->lock);
-  lock_release (&rw_lock->acq_lock);
-  return true;
+  return false;
 }
+     
 
 bool
 rw_lock_try_acquire_w (struct rw_lock *rw_lock)
 {
-  if (!lock_try_acquire (&rw_lock->acq_lock))
-    return false;
-  if (!lock_try_acquire (&rw_lock->lock))
+  ASSERT (!rw_lock_held_by_current_thread_w (rw_lock));
+  if (lock_try_acquire (&rw_lock->lock))
     {
-      lock_release (&rw_lock->acq_lock);
-      return false;
+      if (rw_lock->counter_r > 0)
+        {
+          lock_release (&rw_lock->lock);
+          return false;
+        }
+      rw_lock->counter_w++;
+      return true;
     }
-  if (rw_lock->counter != 0)
-    {
-      lock_release (&rw_lock->lock);
-      lock_release (&rw_lock->acq_lock);
-      return false;
-    }
-  lock_release (&rw_lock->acq_lock);
-  return true;
+  return false;
 }
 
 /* Promotes the calling thread to owner of a write lock, all
@@ -338,14 +334,12 @@ rw_lock_try_acquire_w (struct rw_lock *rw_lock)
 void
 rw_lock_promote (struct rw_lock *rw_lock)
 {
-  lock_acquire (&rw_lock->acq_lock);
+  ASSERT (!rw_lock_held_by_current_thread_w (rw_lock));
   lock_acquire (&rw_lock->lock);
-  /* Uses a seperate cond_var to ensure promotions happen first. */
-  ASSERT (rw_lock->counter > 0);
-  rw_lock->counter--;
-  while (rw_lock->counter != 0)
-    cond_wait (&rw_lock->promote_cond, &rw_lock->lock);
-  lock_release (&rw_lock->acq_lock);
+  rw_lock->counter_r--;
+  rw_lock->counter_w++;
+  while (rw_lock->counter_r > 0)
+    cond_wait (&rw_lock->cond_rp, &rw_lock->lock);
 }
   
 /* It cannot be checked that a thread calling this function
@@ -354,13 +348,14 @@ void
 rw_lock_release_r (struct rw_lock *rw_lock)
 {
   lock_acquire (&rw_lock->lock);
-  ASSERT (rw_lock->counter > 0);
-  if (--rw_lock->counter == 0)
+  ASSERT (rw_lock->counter_r > 0);
+  if (--rw_lock->counter_r == 0)
     {
-      if (!list_empty (&rw_lock->promote_cond.waiters))
-        cond_signal (&rw_lock->promote_cond, &rw_lock->lock);
+      /* Make sure promoting threads wake first. */
+      if (!list_empty (&rw_lock->cond_rp.waiters))
+        cond_signal (&rw_lock->cond_rp, &rw_lock->lock);
       else
-        cond_signal (&rw_lock->cond, &rw_lock->lock);
+        cond_signal (&rw_lock->cond_r, &rw_lock->lock);
     }
   lock_release (&rw_lock->lock);
 }
@@ -369,14 +364,18 @@ void
 rw_lock_release_w (struct rw_lock *rw_lock)
 {
   ASSERT (rw_lock_held_by_current_thread_w (rw_lock));
+  if (--rw_lock->counter_w == 0)
+    cond_signal (&rw_lock->cond_w, &rw_lock->lock);
   lock_release (&rw_lock->lock);
 }
 
 void 
 rw_lock_demote (struct rw_lock *rw_lock)
 {
-  rw_lock->counter++;
-  rw_lock_release_w (rw_lock);
+  ASSERT (rw_lock_held_by_current_thread_w (rw_lock));
+  rw_lock->counter_r++;
+  rw_lock->counter_w--;
+  lock_release (&rw_lock->lock);
 }
   
 

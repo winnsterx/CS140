@@ -4,20 +4,24 @@
 #include "filesys/file.h"
 #include "filesys/filesys.h"
 #include "filesys/inode.h"
+#include "threads/synch.h"
 
 static struct file *free_map_file;   /* Free map file. */
 static struct bitmap *free_map;      /* Free map, one bit per sector. */
 
+static struct lock DEBUG_FREEMAP_LOCK;
 /* Initializes the free map. */
 void
 free_map_init (void) 
 {
+  lock_init (&DEBUG_FREEMAP_LOCK);
   free_map = bitmap_create (block_size (fs_device));
   if (free_map == NULL)
     PANIC ("bitmap creation failed--file system device is too large");
   for (unsigned i = 0; i < INODE_TABLE_SECTORS; i++)
     bitmap_mark (free_map, i);
 }
+
 
 /* Allocates CNT consecutive sectors from the free map and stores
    the first into *SECTORP.
@@ -37,6 +41,7 @@ free_map_allocate (size_t cnt, block_sector_t *sectorp)
     }
   if (sector != BITMAP_ERROR)
     *sectorp = sector;
+
   return sector != BITMAP_ERROR;
 }
 

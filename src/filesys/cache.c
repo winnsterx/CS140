@@ -12,7 +12,6 @@
 
 #define NUM_CACHE_SECTORS 64
 
-struct list cache_free_list;
 struct hash cache_closed_hash;
 struct hash cache_hash;
 
@@ -28,11 +27,8 @@ struct cache_entry_stub
 struct cache_entry
   {
     block_sector_t sector;
-    union
-      {
-        struct hash_elem hash_elem;
-        struct list_elem list_elem;
-      };
+    struct hash_elem elem;
+    struct list_elem locked_elem;
     struct rw_lock rw_lock;
     bool accessed;
     bool dirty;
@@ -40,13 +36,11 @@ struct cache_entry
     uint8_t data[BLOCK_SECTOR_SIZE];
   };
 
-
 struct fetch_struct
   {
     block_sector_t sector;
     struct list_elem elem;
   };
-
 
 static struct cache_entry cache_entries[NUM_CACHE_SECTORS];
 static struct lock cache_lock;
@@ -55,6 +49,7 @@ static struct list cache_fetch_list;
 static unsigned cur_index;
 static bool done;
 
+static struct cache_entry *cache_get_current_locked_entry (unsigned);
 static struct cache_entry *cache_lookup (unsigned, bool);
 static void cache_flush (void);
 static void cache_flush_loop (void *);
@@ -71,27 +66,32 @@ static bool cache_less_func (const struct hash_elem *,
 void 
 cache_init (void)
 {
-  bool success = hash_init (&cache_hash, 
-                            cache_hash_func, 
-                            cache_less_func, 
-                            NULL);
-  ASSERT (success);
-  success = hash_init (&cache_closed_hash,
-                       cache_hash_func,
-                       cache_less_func,
-                       NULL);
-  ASSERT (success);
+  if (!hash_init (&cache_hash, 
+                  cache_hash_func, 
+                  cache_less_func, 
+                  NULL) ||
+      !hash_init (&cache_closed_hash,
+                  cache_hash_func,
+                  cache_less_func,
+                  NULL))
+    {
+      PANIC ("Could not initialize the filesys cache.");
+    }
+
   lock_init (&cache_lock);
-  list_init (&cache_free_list);
   list_init (&cache_fetch_list);
   sema_init (&cache_fetch_sem, 0);
   cur_index = 0;
 
   for (unsigned i = 0; i < NUM_CACHE_SECTORS; i++)
     {
+      /* Initially place placeholder sectors in CLOSED_HASH. These
+         will be evicted until the cache is full. */
       struct cache_entry *ce = &cache_entries[i];
       rw_lock_init (&ce->rw_lock);
-      list_push_back (&cache_free_list, &ce->list_elem);
+      ce->sector = -1;
+      ce->dirty = false;
+      hash_insert (&cache_closed_hash, &ce->elem);
     }
 
   done = false;
@@ -146,9 +146,11 @@ cache_sector_write (unsigned sector, const void *buffer,
 void
 cache_sector_lock (unsigned sector)
 {
-  /* Thread takes a read lock. */
+  /* Thread takes a read lock, which must be promoted. */
   struct cache_entry *ce = cache_get_entry (sector);
   rw_lock_promote (&ce->rw_lock);
+  struct list *list = &thread_current ()->locked_sectors;
+  list_push_back (list, &ce->locked_elem); 
 }
 
 /* Unlocks a sector. The sector is then accessible and evictable. */
@@ -156,15 +158,27 @@ void
 cache_sector_unlock (unsigned sector)
 {
   struct cache_entry *ce;
-  lock_acquire (&cache_lock);
-  ce = cache_lookup (sector, false);
-  lock_release (&cache_lock);
-  ASSERT (ce != NULL);
+  ASSERT (ce = cache_get_current_locked_entry (sector));
+  list_remove (&ce->locked_elem);
   rw_lock_release_w (&ce->rw_lock);
 }
 
+/* Adds a dirty cache_entry for SECTOR, as a blank sector. Used
+   when allocating sectors to a file. The entry is marked dirty. */
+void
+cache_sector_add (unsigned sector)
+{
+  struct cache_entry *ce = cache_get_entry (sector);
+  ce->accessed = true;
+  ce->dirty = true;
+  memset (&ce->data[0], 0, BLOCK_SECTOR_SIZE);
+  if (!rw_lock_held_by_current_thread_w (&ce->rw_lock))
+    rw_lock_release_r (&ce->rw_lock);
+}
+
 /* Schedules an asynchronous fetch of block sector SECTOR and returns
-   immediately. Should not be called on a locked sector. */
+   immediately. Should not be called on a locked sector. Does nothing
+   if a fetch_struct could not be allocated. */
 void
 cache_sector_fetch_async (unsigned sector)
 {
@@ -185,19 +199,6 @@ cache_sector_close (unsigned sector)
   cache_sector_cr (sector, false);
 }
 
-/* Adds a dirty cache_entry for SECTOR, as a blank sector. Used
-   when allocating sectors to a file. The entry is marked dirty. */
-void
-cache_sector_add (unsigned sector)
-{
-  struct cache_entry *ce = cache_get_entry (sector);
-  ce->accessed = true;
-  ce->dirty = true;
-  memset (&ce->data[0], 0, BLOCK_SECTOR_SIZE);
-  if (!rw_lock_held_by_current_thread_w (&ce->rw_lock))
-    rw_lock_release_r (&ce->rw_lock);
-}
-
 /* Closes a sector, making it considered earlier for eviction. Marks
    the sector as clean, so the sector will not be written to the disk
    on eviction. */
@@ -207,24 +208,9 @@ cache_sector_remove (unsigned sector)
   cache_sector_cr (sector, true);
 }
 
-/* Helper function that handles closing and removing of sectors. */
-static void
-cache_sector_cr (unsigned sector, bool deleted)
-{
-  lock_acquire (&cache_lock);
-  struct cache_entry *ce = cache_lookup (sector, false);
-  if (ce != NULL)
-    {
-      hash_delete (&cache_hash, &ce->hash_elem);
-      hash_insert (&cache_closed_hash, &ce->hash_elem);
-      if (deleted)
-        ce->dirty = false;
-    }
-  lock_release (&cache_lock);
-}
-
 /* Returns a pointer to the cache_entry assigned to SECTOR, if present.
-   Otherwise returns NULL. */
+   Otherwise returns NULL. Checks amongst cache_entries cointaing closed
+   sectors is CLOSED is true. */
 static struct cache_entry *
 cache_lookup (unsigned sector, bool closed)
 {
@@ -236,13 +222,33 @@ cache_lookup (unsigned sector, bool closed)
   if (e == NULL)
     return NULL;
 
-  return hash_entry (e, struct cache_entry, hash_elem);
+  return hash_entry (e, struct cache_entry, elem);
 }
 
-/* First checks CACHE_CLOSED_HASH, and evicts an entry from it if
-   it is not empty. Otherwise uses clock algorithm to select a 
-   cache_entry for eviction, removes the entry from CACHE_HASH 
-   (signifies not present in cache). */
+/* Returns a the cache_entry containing SECTOR if that sector
+   if SECTOR is locked by the current thread. Otherwise returns
+   NULL. */
+static struct cache_entry *
+cache_get_current_locked_entry (unsigned sector)
+{
+  struct list_elem *e;
+  struct cache_entry *ce;
+  struct list *list = &thread_current ()->locked_sectors; 
+  for (e = list_begin (list); e != list_end (list); e = list_next (e))
+    {
+      ce = list_entry (e, struct cache_entry, locked_elem);
+      if (ce->sector == sector)
+        {
+          ASSERT (rw_lock_held_by_current_thread_w (&ce->rw_lock));
+          return ce;
+        }
+    }
+  return NULL;
+}
+
+/* Chooses a cache_entry for eviction. Takes one from a closed sector 
+   if available, otherwise chooses a one using the clock algorithim. Acquires
+   a write lock to the cache_entry and returns it. */
 static struct cache_entry *
 cache_evict (void)
 {
@@ -253,7 +259,7 @@ cache_evict (void)
   if (e != NULL)
     {
       hash_delete (&cache_closed_hash, e);
-      ce = hash_entry (e, struct cache_entry, hash_elem);
+      ce = hash_entry (e, struct cache_entry, elem);
       rw_lock_acquire_w (&ce->rw_lock);
       return ce;
     } 
@@ -263,9 +269,11 @@ cache_evict (void)
       cur_index++;
       cur_index %= NUM_CACHE_SECTORS;
       ce = &cache_entries[cur_index];
+  
       if (!rw_lock_held_by_current_thread_w (&ce->rw_lock) &&
           rw_lock_try_acquire_w (&ce->rw_lock))
         {
+          /* Only necessary to check that the thread is safe to evict. */
           if (ce->accessed)
             {
               ce->accessed = false;
@@ -276,7 +284,63 @@ cache_evict (void)
         }
     }
   
-  hash_delete (&cache_hash, &ce->hash_elem);
+  return ce;
+}
+
+/* Searches for SECTOR in the cache. If not present, and cache_entry is 
+   assigned, evicting and writing back an entry if necessary. Data is 
+   read from the disk to the cache_entry, and a pointer to the entry 
+   is returned. */
+static struct cache_entry *
+cache_get_entry (unsigned sector)
+{
+  /* Check: Sector is locked by the current thread. */
+  struct cache_entry *ce;
+  ce = cache_get_current_locked_entry (sector);
+  if (ce != NULL)
+    return ce;
+
+  /* Check: Sector is already present in the cache, and not closed. */ 
+  lock_acquire (&cache_lock);
+  ce = cache_lookup (sector, false);
+  if (ce != NULL)
+    {
+      rw_lock_acquire_r (&ce->rw_lock);
+      lock_release (&cache_lock);
+      return ce;
+    }
+
+  /* Check: Sector is present in the cache, but closed. */
+  ce = cache_lookup (sector, true);
+  if (ce != NULL)
+    {
+      hash_delete (&cache_closed_hash, &ce->elem);
+      hash_insert (&cache_hash, &ce->elem);
+      rw_lock_acquire_r (&ce->rw_lock);
+      lock_release (&cache_lock);
+      return ce;
+    }
+
+  /* Sector must be read from the disk. */
+  unsigned old_sector;
+  bool write_back = false;
+  /* Write lock is acquired in cache_evict (). */
+  ce = cache_evict ();
+  if (ce->dirty)
+  {
+    old_sector = ce->sector;
+    write_back = true;
+  }
+  /* Must rehash using the new sector. */
+  hash_delete (&cache_hash, &ce->elem);
+  ce->sector = sector;
+  ce->dirty = false;
+  hash_insert (&cache_hash, &ce->elem);
+  lock_release (&cache_lock);
+  if (write_back)
+    block_write (fs_device, old_sector, &ce->data);
+  block_read (fs_device, sector, &ce->data); 
+  rw_lock_demote (&ce->rw_lock);
   return ce;
 }
 
@@ -331,71 +395,27 @@ cache_flush_loop (void *aux UNUSED)
     }
 }
 
-/* Searches for SECTOR in the cache. If not present, and cache_entry is 
-   assigned, evicting and writing back an entry if necessary. Data is 
-   read from the disk to the cache_entry, and a pointer to the entry 
-   is returned. */
-static struct cache_entry *
-cache_get_entry (unsigned sector)
+/* Helper function that handles closing and removing of sectors. */
+static void
+cache_sector_cr (unsigned sector, bool deleted)
 {
-  struct cache_entry *ce;
   lock_acquire (&cache_lock);
-  ce = cache_lookup (sector, false);
+  struct cache_entry *ce = cache_lookup (sector, false);
   if (ce != NULL)
     {
-      /* Take a read lock to prevent eviction. */
-      if (!rw_lock_held_by_current_thread_w (&ce->rw_lock))
-        rw_lock_acquire_r (&ce->rw_lock);
-      lock_release (&cache_lock);
-      return ce;
+      hash_delete (&cache_hash, &ce->elem);
+      hash_insert (&cache_closed_hash, &ce->elem);
+      if (deleted)
+        ce->dirty = false;
     }
-  /* May still be intact in CACHE_CLOSED_HASH. */
-  ce = cache_lookup (sector, true);
-  if (ce != NULL)
-    {
-      hash_delete (&cache_closed_hash, &ce->hash_elem);
-      hash_insert (&cache_hash, &ce->hash_elem);
-      rw_lock_acquire_r (&ce->rw_lock);
-      lock_release (&cache_lock);
-      return ce;
-    }
-  /* Sector must be read from the disk. */
-  unsigned old_sector;
-  bool write_back = false;
-  if (list_empty (&cache_free_list))
-    {
-      /* Write lock is acquired in cache_evict (). */
-      ce = cache_evict ();
-      if (ce->dirty)
-        {
-          old_sector = ce->sector;
-          write_back = true;
-        }
-    }
-  else
-    {
-      ce = list_entry (list_pop_front (&cache_free_list), 
-                       struct cache_entry, 
-                       list_elem);
-      /* Unlocked when data fetch from disk is complete. */
-      rw_lock_acquire_w (&ce->rw_lock);
-    }
-  ce->sector = sector;
-  hash_insert (&cache_hash, &ce->hash_elem);
   lock_release (&cache_lock);
-  if (write_back)
-    block_write (fs_device, old_sector, &ce->data);
-  ce->dirty = false;
-  block_read (fs_device, sector, &ce->data); 
-  rw_lock_demote (&ce->rw_lock);
-  return ce;
 }
 
 /* Hashes cache_entries by the sector number it stores. */
 static unsigned 
 cache_hash_func (const struct hash_elem *e, void *aux UNUSED)
 {
-  struct cache_entry *ce = hash_entry (e, struct cache_entry, hash_elem);
+  struct cache_entry *ce = hash_entry (e, struct cache_entry, elem);
   return hash_int ((int) ce->sector);
 }
 
@@ -405,7 +425,7 @@ cache_less_func (const struct hash_elem *a,
                  const struct hash_elem *b,
                  void *aux UNUSED)
 {
-  struct cache_entry *cea = hash_entry (a, struct cache_entry, hash_elem);
-  struct cache_entry *ceb = hash_entry (b, struct cache_entry, hash_elem);
+  struct cache_entry *cea = hash_entry (a, struct cache_entry, elem);
+  struct cache_entry *ceb = hash_entry (b, struct cache_entry, elem);
   return cea->sector < ceb->sector;
 }

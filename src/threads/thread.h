@@ -7,6 +7,7 @@
 #include <stdint.h>
 #include "threads/synch.h"
 
+
 /* States in a thread's life cycle. */
 enum thread_status
   {
@@ -105,6 +106,9 @@ struct thread
     struct list fd_list;                /* List of fd_structs. */
     struct file *exec_file;             /* Currently executing file. */
 #endif
+
+    /* Owned by filesys/cache.c. */
+    struct list locked_sectors;         /* Sectors locked by this thread. */
 
     /* Shared between thread.c and synch.c. */
     struct list_elem elem;              /* List element. */
