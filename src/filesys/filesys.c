@@ -51,7 +51,7 @@ filesys_create (const char *name, off_t initial_size)
   printf ("In filesys_create");
   /* 0 is reserved for the free map. */
   inumber_t inumber = 0;
-  block_sector_t inode_sector = 0;
+  //block_sector_t inode_sector = 0;
   if (name == NULL || strlen (name) == 0) 
     return false;
   char *file = dir_file (name);

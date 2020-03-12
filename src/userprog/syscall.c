@@ -1,6 +1,7 @@
 #include "userprog/syscall.h"
 #include <limits.h>
 #include <stdio.h>
+#include <string.h>
 #include <syscall-nr.h>
 #include "filesys/file.h"
 #include "devices/input.h"
@@ -136,7 +137,7 @@ syscall_handler (struct intr_frame *f UNUSED)
 	mkdir (*(const char **) arg1);
 	break;
       case SYS_READDIR:
-	readdir (*(int *) arg1, *(char *)arg2);
+	readdir (*(int *) arg1, *(char **)arg2);
 	break;
       case SYS_ISDIR:
 	isdir (*(int *) arg1);
@@ -393,7 +394,7 @@ already exists and "/a/b/c" does not. */
 static bool
 mkdir (const char *name)
 {
-  if (!validate_name (dir))
+  if (!validate_name (name))
     thread_exit ();
   
   /* 0 is reserved for the free map. */
@@ -410,20 +411,19 @@ mkdir (const char *name)
 
   bool success = (dir != NULL
                   && inode_assign_inumber (&inumber)
-                  && dir_create (inumber, dir_get_inode (dir)->inumber)
+                  && dir_create (inumber, inode_get_inumber (dir_get_inode (dir)))
                   && dir_add (dir, file, inumber));
   if (!success && inumber != 0) 
     inode_release_inumber (inumber);
   free (path);
   dir_close (dir);
-
   return success;  
 }
 
 static bool
 readdir (int fd, char *name)
 {
-  if (!validate_name (dir))
+  if (!validate_name (name))
     thread_exit ();
   
   char dest[READDIR_MAX_LEN + 1];
@@ -434,10 +434,10 @@ static bool
 isdir (int fd) 
 {
   struct fd_struct *fd_struct = find_fd_struct (fd);
-  if (fd_struct == NULL || fd_struct->fd == NULL)
+  if (fd_struct == NULL)
     return false;
 
-  if (fd_struct->fd->is_dir != true)
+  if (!file_is_dir (fd_struct->file))
     return false;
   
   return true; 
@@ -449,8 +449,8 @@ inumber (int fd)
   struct fd_struct *fd_struct = find_fd_struct (fd);
   if (fd_struct == NULL || fd_struct->file == NULL)
     return -1;
-  
-  return fd_struct->file->inode->inumber; 
+ 
+  return inode_get_inumber (file_get_inode (fd_struct->file)); 
 }
 
 
