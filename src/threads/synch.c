@@ -264,6 +264,130 @@ lock_held_by_current_thread (const struct lock *lock)
   return lock->holder == thread_current ();
 }
 
+void
+rw_lock_init (struct rw_lock *rw_lock)
+{
+  lock_init (&rw_lock->lock);
+  lock_init (&rw_lock->acq_lock);
+  cond_init (&rw_lock->cond);
+  cond_init (&rw_lock->promote_cond);
+  rw_lock->counter = 0;
+}
+
+void
+rw_lock_acquire_r (struct rw_lock *rw_lock)
+{
+  lock_acquire (&rw_lock->acq_lock);
+  lock_acquire (&rw_lock->lock);
+  rw_lock->counter++;
+  lock_release (&rw_lock->lock);
+  lock_release (&rw_lock->acq_lock);
+}
+
+void
+rw_lock_acquire_w (struct rw_lock *rw_lock)
+{
+  /* Prevent new read acquisitions, since
+     cond_wait will release RW_LOCK->LOCK. */
+  lock_acquire (&rw_lock->acq_lock);
+  lock_acquire (&rw_lock->lock);
+  while (rw_lock->counter != 0)
+    cond_wait (&rw_lock->cond, &rw_lock->lock);
+  lock_release (&rw_lock->acq_lock);
+}
+
+bool
+rw_lock_try_acquire_r (struct rw_lock *rw_lock)
+{
+  if (!lock_try_acquire (&rw_lock->acq_lock))
+    return false;
+  if (!lock_try_acquire (&rw_lock->acq_lock))
+    {
+      lock_release (&rw_lock->acq_lock);
+      return false;
+    }
+  rw_lock->counter++;
+  lock_release (&rw_lock->lock);
+  lock_release (&rw_lock->acq_lock);
+  return true;
+}
+
+bool
+rw_lock_try_acquire_w (struct rw_lock *rw_lock)
+{
+  if (!lock_try_acquire (&rw_lock->acq_lock))
+    return false;
+  if (!lock_try_acquire (&rw_lock->lock))
+    {
+      lock_release (&rw_lock->acq_lock);
+      return false;
+    }
+  if (rw_lock->counter != 0)
+    {
+      lock_release (&rw_lock->lock);
+      lock_release (&rw_lock->acq_lock);
+      return false;
+    }
+  lock_release (&rw_lock->acq_lock);
+  return true;
+}
+
+/* Promotes the calling thread to owner of a write lock, all
+   promotions supercede all attempts to acquire a write lock
+   through rw_lock_acquire_w (). Promotions */
+void
+rw_lock_promote (struct rw_lock *rw_lock)
+{
+  lock_acquire (&rw_lock->acq_lock);
+  lock_acquire (&rw_lock->lock);
+  /* Uses a seperate cond_var to ensure promotions happen first. */
+  ASSERT (rw_lock->counter > 0);
+  rw_lock->counter--;
+  while (rw_lock->counter != 0)
+    cond_wait (&rw_lock->promote_cond, &rw_lock->lock);
+  lock_release (&rw_lock->acq_lock);
+}
+  
+/* It cannot be checked that a thread calling this function
+   has acquired a read lock. Take care to ensure proper use. */
+void
+rw_lock_release_r (struct rw_lock *rw_lock)
+{
+  lock_acquire (&rw_lock->lock);
+  ASSERT (rw_lock->counter > 0);
+  if (--rw_lock->counter == 0)
+    {
+      if (!list_empty (&rw_lock->promote_cond.waiters))
+        cond_signal (&rw_lock->promote_cond, &rw_lock->lock);
+      else
+        cond_signal (&rw_lock->cond, &rw_lock->lock);
+    }
+  lock_release (&rw_lock->lock);
+}
+
+void
+rw_lock_release_w (struct rw_lock *rw_lock)
+{
+  ASSERT (rw_lock_held_by_current_thread_w (rw_lock));
+  lock_release (&rw_lock->lock);
+}
+
+void 
+rw_lock_demote (struct rw_lock *rw_lock)
+{
+  rw_lock->counter++;
+  rw_lock_release_w (rw_lock);
+}
+  
+
+bool
+rw_lock_held_by_current_thread_w (const struct rw_lock *rw_lock)
+{
+  return lock_held_by_current_thread (&rw_lock->lock);
+}
+
+  
+
 /* One semaphore in a list. */
 struct semaphore_elem 
   {

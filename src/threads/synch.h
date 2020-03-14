@@ -41,6 +41,26 @@ void cond_wait (struct condition *, struct lock *);
 void cond_signal (struct condition *, struct lock *);
 void cond_broadcast (struct condition *, struct lock *);
 
+struct rw_lock
+  {
+    unsigned counter;
+    struct lock lock;
+    struct lock acq_lock;
+    struct condition cond;
+    struct condition promote_cond;
+  };
+
+void rw_lock_init (struct rw_lock *);
+void rw_lock_acquire_r (struct rw_lock *);
+bool rw_lock_try_acquire_r (struct rw_lock *);
+void rw_lock_acquire_w (struct rw_lock *);
+bool rw_lock_try_acquire_w (struct rw_lock *);
+void rw_lock_promote (struct rw_lock *);
+void rw_lock_release_r (struct rw_lock *);
+void rw_lock_release_w (struct rw_lock *);
+void rw_lock_demote (struct rw_lock *);
+bool rw_lock_held_by_current_thread_w (const struct rw_lock *); 
+
 /* Optimization barrier.
 
    The compiler will not reorder operations across an
