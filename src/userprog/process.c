@@ -73,7 +73,8 @@ process_execute (const char *command)
   sema_init (&process_args.process_loaded_sem, 0);
 
   /* Create a new thread to execute FILE_NAME. */
-  tid = thread_create (file_name, PRI_DEFAULT, start_process, &process_args);
+  tid = thread_create (file_name, PRI_DEFAULT, thread_current ()->cwd,
+		       start_process, &process_args);
 
   if (tid == TID_ERROR)
     {

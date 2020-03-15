@@ -134,13 +134,14 @@ void thread_tick (void);
 void thread_print_stats (void);
 
 typedef void thread_func (void *aux);
-tid_t thread_create (const char *name, int priority, thread_func *, void *);
+tid_t thread_create (const char *name, int priority, struct dir *cwd, thread_func *, void *);
 
 void thread_block (void);
 void thread_unblock (struct thread *);
 
 struct thread *thread_current (void);
 tid_t thread_tid (void);
+struct dir *thread_cwd (void);
 const char *thread_name (void);
 
 void thread_exit (void) NO_RETURN;
