@@ -45,8 +45,8 @@ struct rw_lock
   {
     unsigned counter_r;
     unsigned counter_w;
+    unsigned counter_p;
     struct condition cond_r;
-    struct condition cond_rp;
     struct condition cond_w;
     struct lock lock;
   };

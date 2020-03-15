@@ -1,25 +1,30 @@
 #include "filesys/free-map.h"
 #include <bitmap.h>
 #include <debug.h>
+#include <round.h>
+#include "filesys/cache.h"
 #include "filesys/file.h"
 #include "filesys/filesys.h"
 #include "filesys/inode.h"
+#include "threads/malloc.h"
 #include "threads/synch.h"
 
 static struct file *free_map_file;   /* Free map file. */
 static struct bitmap *free_map;      /* Free map, one bit per sector. */
-
+static void *buf;
+static size_t bit_cnt;
+static size_t buf_size;
+size_t num_sectors;
 static struct lock DEBUG_FREEMAP_LOCK;
 /* Initializes the free map. */
 void
 free_map_init (void) 
 {
   lock_init (&DEBUG_FREEMAP_LOCK);
-  free_map = bitmap_create (block_size (fs_device));
-  if (free_map == NULL)
-    PANIC ("bitmap creation failed--file system device is too large");
-  for (unsigned i = 0; i < INODE_TABLE_SECTORS; i++)
-    bitmap_mark (free_map, i);
+  bit_cnt = block_size (fs_device);
+  buf_size = bitmap_buf_size (bit_cnt);
+  num_sectors = DIV_ROUND_UP (bitmap_buf_size (bit_cnt),
+                                       BLOCK_SECTOR_SIZE);
 }
 
 
@@ -32,16 +37,11 @@ bool
 free_map_allocate (size_t cnt, block_sector_t *sectorp)
 {
   block_sector_t sector = bitmap_scan_and_flip (free_map, 0, cnt, false);
-  if (sector != BITMAP_ERROR
-      && free_map_file != NULL
-      && !bitmap_write (free_map, free_map_file))
-    {
-      bitmap_set_multiple (free_map, sector, cnt, false); 
-      sector = BITMAP_ERROR;
-    }
   if (sector != BITMAP_ERROR)
-    *sectorp = sector;
-
+    {
+      *sectorp = sector;
+      cache_sector_dirty_external (INODE_TABLE_SECTORS);
+    }
   return sector != BITMAP_ERROR;
 }
 
@@ -51,25 +51,29 @@ free_map_release (block_sector_t sector, size_t cnt)
 {
   ASSERT (bitmap_all (free_map, sector, cnt));
   bitmap_set_multiple (free_map, sector, cnt, false);
-  bitmap_write (free_map, free_map_file);
+  cache_sector_dirty_external (INODE_TABLE_SECTORS);
 }
 
 /* Opens the free map file and reads it from disk. */
 void
 free_map_open (void) 
 {
-  free_map_file = file_open (inode_open (FREE_MAP_INUMBER));
-  if (free_map_file == NULL)
-    PANIC ("can't open free map");
-  if (!bitmap_read (free_map, free_map_file))
-    PANIC ("can't read free map");
+  buf = malloc (bitmap_buf_size (bit_cnt));
+  if (buf == NULL)
+    PANIC ("bitmap creation failed--file system device is too large");  
+ 
+  if (!cache_sector_read_external (INODE_TABLE_SECTORS, buf,
+                                   num_sectors * BLOCK_SECTOR_SIZE)) 
+    PANIC ("Could not cache the free-map.");
+  free_map = bitmap_open_in_buf (bit_cnt, buf, buf_size);
 }
 
 /* Writes the free map to disk and closes the free map file. */
 void
 free_map_close (void) 
 {
-  file_close (free_map_file);
+  cache_sector_free_external (INODE_TABLE_SECTORS);
+  free (buf);
 }
 
 /* Creates a new free map file on disk and writes the free map to
@@ -77,21 +81,17 @@ free_map_close (void)
 void
 free_map_create (void) 
 {
-  /* Create inode. */
-  unsigned length = bitmap_file_size (free_map);
-  unsigned num_sectors;
-  if (!inode_create_seq (FREE_MAP_INUMBER, &num_sectors, length, 
-                         INODE_TABLE_SECTORS))
-    PANIC ("free map creation or open failed");
+  buf = calloc (bitmap_buf_size (bit_cnt), 1);
+  if (buf == NULL)
+    PANIC ("bitmap creation failed--file system device is too large");  
+  if (!cache_sector_read_external (INODE_TABLE_SECTORS, buf,
+                                   num_sectors * BLOCK_SECTOR_SIZE)) 
+    PANIC ("Could not cache the free-map.");
   
-  /* Mark all sectors used by the free-map file. */
-  for (unsigned i = 0; i < num_sectors; i++)
-    bitmap_mark (free_map, i + INODE_TABLE_SECTORS);
- 
-  /* Write bitmap to file. */
-  free_map_file = file_open (inode_open (FREE_MAP_INUMBER));
-  if (free_map_file == NULL)
-    PANIC ("can't open free map");
-  if (!bitmap_write (free_map, free_map_file))
-    PANIC ("can't write free map");
+  free_map = bitmap_create_in_buf (bit_cnt, buf, buf_size);
+
+  /* Mark all sectors used by the inode table and free-map. */
+  for (unsigned i = 0; i < INODE_TABLE_SECTORS + num_sectors; i++)
+    bitmap_mark (free_map, i);
+  cache_sector_dirty_external (INODE_TABLE_SECTORS); 
 }

@@ -8,6 +8,13 @@
 #include "threads/synch.h"
 
 
+
+
+// DEEEEEEBUGGGGGGG
+struct list debug_list;
+
+
+
 /* States in a thread's life cycle. */
 enum thread_status
   {
@@ -97,7 +104,13 @@ struct thread
 
     /* Owned by synch.c. */
     int64_t blocked_until;              /* OS tick when thread should wake. */
-    
+   
+
+     /* DEBUGGGGG*/ char *num;
+      unsigned snum;
+     struct list_elem debug;
+     struct lock *slock;
+  
 #ifdef USERPROG
     /* Owned by userprog/process.c. */
     uint32_t *pagedir;                  /* Page directory. */

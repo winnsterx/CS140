@@ -8,10 +8,12 @@
 #define INODE_TABLE_SECTORS 8
 
 /* inumbers of system file inodes. */
-#define FREE_MAP_INUMBER 0
-#define ROOT_DIR_INUMBER 1
+//#define FREE_MAP_INUMBER 0
+#define ROOT_DIR_INUMBER 0
 
-
+#define PRI_INODE 3
+#define PRI_META 2
+#define PRI_NORMAL 1
 
 /* Block device that contains the file system. */
 struct block *fs_device;

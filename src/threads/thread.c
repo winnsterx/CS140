@@ -103,6 +103,11 @@ static bool ready_is_empty (void);
 void
 thread_init (void) 
 {
+
+// DBUGGGGGGGGGG
+  list_init (&debug_list);
+
+
   ASSERT (intr_get_level () == INTR_OFF);
 
   lock_init (&tid_lock);

@@ -68,17 +68,38 @@ void
 sema_down (struct semaphore *sema) 
 {
   enum intr_level old_level;
-
+  static bool deadlock;
   ASSERT (sema != NULL);
   ASSERT (!intr_context ());
 
   old_level = intr_disable ();
+  if (!deadlock)
+    {
+      int count = 0;
+      struct list_elem *e;
+      for (e = list_begin (&debug_list); e != list_end (&debug_list); e = list_next (e))
+        {
+          //struct thread *t = list_entry (e, struct thread, debug);
+          //if (strcmp (t->name, "child-syn-rw") == 0)
+            count++;
+        }
+      if (count == 7)
+        {
+          deadlock = true;
+          //printf ("FUCK BITCH\n");
+
+          //debug_backtrace_all ();
+        }
+      list_push_back (&debug_list, &thread_current ()->debug);
+    }
   while (sema->value == 0) 
     {
       list_insert_ordered (&sema->waiters, &thread_current ()->elem,
        & priority_comp, NULL);
       thread_block ();
     }
+  if (!deadlock)
+    list_remove (&thread_current ()->debug);
   sema->value--;
   intr_set_level (old_level);
 }
@@ -270,7 +291,6 @@ rw_lock_init (struct rw_lock *rw_lock)
   rw_lock->counter_r = 0;
   rw_lock->counter_w = 0;
   cond_init (&rw_lock->cond_r);
-  cond_init (&rw_lock->cond_rp);
   cond_init (&rw_lock->cond_w);
   lock_init (&rw_lock->lock);
 }
@@ -291,7 +311,7 @@ rw_lock_acquire_w (struct rw_lock *rw_lock)
   ASSERT (!rw_lock_held_by_current_thread_w (rw_lock));
   lock_acquire (&rw_lock->lock);
   rw_lock->counter_w++;
-  while (rw_lock->counter_r > 0)
+  while (rw_lock->counter_r > 0 && rw_lock->counter_p > 0)
     cond_wait (&rw_lock->cond_r, &rw_lock->lock);
 }
 
@@ -338,8 +358,10 @@ rw_lock_promote (struct rw_lock *rw_lock)
   lock_acquire (&rw_lock->lock);
   rw_lock->counter_r--;
   rw_lock->counter_w++;
+  rw_lock->counter_p++;
   while (rw_lock->counter_r > 0)
-    cond_wait (&rw_lock->cond_rp, &rw_lock->lock);
+    cond_wait (&rw_lock->cond_r, &rw_lock->lock);
+  rw_lock->counter_p--;
 }
   
 /* It cannot be checked that a thread calling this function
@@ -347,16 +369,18 @@ rw_lock_promote (struct rw_lock *rw_lock)
 void
 rw_lock_release_r (struct rw_lock *rw_lock)
 {
-  lock_acquire (&rw_lock->lock);
+  // DEBUG
+  bool succ = lock_try_acquire (&rw_lock->lock);
+  while (!succ)
+    {
+      //printf ("BUG\n");
+     succ = lock_try_acquire (&rw_lock->lock);
+    }
+
+  //lock_acquire (&rw_lock->lock);
   ASSERT (rw_lock->counter_r > 0);
   if (--rw_lock->counter_r == 0)
-    {
-      /* Make sure promoting threads wake first. */
-      if (!list_empty (&rw_lock->cond_rp.waiters))
-        cond_signal (&rw_lock->cond_rp, &rw_lock->lock);
-      else
-        cond_signal (&rw_lock->cond_r, &rw_lock->lock);
-    }
+    cond_broadcast (&rw_lock->cond_r, &rw_lock->lock);
   lock_release (&rw_lock->lock);
 }
 
@@ -365,7 +389,8 @@ rw_lock_release_w (struct rw_lock *rw_lock)
 {
   ASSERT (rw_lock_held_by_current_thread_w (rw_lock));
   if (--rw_lock->counter_w == 0)
-    cond_signal (&rw_lock->cond_w, &rw_lock->lock);
+    cond_broadcast (&rw_lock->cond_w, &rw_lock->lock);
+  //printf ("num writers: %u\n", rw_lock->counter_w);
   lock_release (&rw_lock->lock);
 }
 
@@ -375,6 +400,7 @@ rw_lock_demote (struct rw_lock *rw_lock)
   ASSERT (rw_lock_held_by_current_thread_w (rw_lock));
   rw_lock->counter_r++;
   rw_lock->counter_w--;
+  cond_broadcast (&rw_lock->cond_w, &rw_lock->lock);
   lock_release (&rw_lock->lock);
 }
   

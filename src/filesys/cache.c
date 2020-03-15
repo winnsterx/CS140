@@ -14,6 +14,7 @@
 
 struct hash cache_closed_hash;
 struct hash cache_hash;
+struct list list_ext;
 
 /* Used for hash searches without allocating an entire
    cache_entry. Must have same offset between SECTOR and
@@ -30,10 +31,19 @@ struct cache_entry
     struct hash_elem elem;
     struct list_elem locked_elem;
     struct rw_lock rw_lock;
-    bool accessed;
+    uint8_t accessed;
     bool dirty;
     bool is_meta;
     uint8_t data[BLOCK_SECTOR_SIZE];
+  };
+
+struct cache_entry_ext
+  {
+    block_sector_t sector;
+    struct list_elem ext_elem;
+    bool dirty;
+    unsigned num_sectors;
+    void *data;
   };
 
 struct fetch_struct
@@ -41,6 +51,22 @@ struct fetch_struct
     block_sector_t sector;
     struct list_elem elem;
   };
+
+
+char *names[14] = {"r release cache_sector_read",
+                  "r release cache_sector_write",
+                  "promote cahce_sector_lock",
+                  "r release cache_sector_add",
+                  "w acquire cache_evict",  
+                  "acquire (cache_lock) cache_get_entry",
+                  "r acquire (present) cache_get_entry",
+                  "r acquire (closed) cache_get_entry",
+                  "demote cache_get_entry",
+                  "r release cache_fetch_loop",
+                  "r acquire cache_flush",
+                  "r release cache_flush",
+                  "acquire (cache_lock) cache_sector_cr",
+                  "down cache_fetch_loop"};
 
 static struct cache_entry cache_entries[NUM_CACHE_SECTORS];
 static struct lock cache_lock;
@@ -80,6 +106,7 @@ cache_init (void)
 
   lock_init (&cache_lock);
   list_init (&cache_fetch_list);
+  list_init (&list_ext);
   sema_init (&cache_fetch_sem, 0);
   cur_index = 0;
 
@@ -114,14 +141,19 @@ cache_destroy (void)
    cache slot is marked as accessed. */
 void 
 cache_sector_read (unsigned sector, void *buffer,
-                   unsigned size, unsigned offset)
+                   unsigned size, unsigned offset, unsigned pri)
 {
   ASSERT (offset + size <= BLOCK_SECTOR_SIZE);
   struct cache_entry *ce = cache_get_entry (sector);
-  ce->accessed = true;
+  ce->accessed = pri;
   memcpy (buffer, &ce->data[offset], size);
   if (!rw_lock_held_by_current_thread_w (&ce->rw_lock))
+  {
+    thread_current ()->num = names[0];
+    thread_current ()->snum = ce - &cache_entries[0];
+    thread_current ()->slock = &ce->rw_lock.lock;
     rw_lock_release_r (&ce->rw_lock);
+  }
 }
 
 /* If the SECTOR is not present in the cache, SECTOR is read into the cache.
@@ -129,15 +161,20 @@ cache_sector_read (unsigned sector, void *buffer,
    The cache_entry is marked as accessed and dirty. */
 void 
 cache_sector_write (unsigned sector, const void *buffer,
-                    unsigned size, unsigned offset)
+                    unsigned size, unsigned offset, unsigned pri)
 {
   ASSERT (offset + size <= BLOCK_SECTOR_SIZE);
   struct cache_entry *ce = cache_get_entry (sector);
-  ce->accessed = true;
+  ce->accessed = pri;
   ce->dirty = true;
   memcpy (&ce->data[offset], buffer, size);
   if (!rw_lock_held_by_current_thread_w (&ce->rw_lock))
+  {
+    thread_current ()->num = names[1];
+    thread_current ()->snum = ce - &cache_entries[0];
+    thread_current ()->slock = &ce->rw_lock.lock;
     rw_lock_release_r (&ce->rw_lock);
+  }
 }
 
 /* Locks a sector in the sector cannot be evicted or accessed while
@@ -146,8 +183,15 @@ cache_sector_write (unsigned sector, const void *buffer,
 void
 cache_sector_lock (unsigned sector)
 {
+
+
   /* Thread takes a read lock, which must be promoted. */
+
   struct cache_entry *ce = cache_get_entry (sector);
+  //printf ("%u locks %u\n", thread_current ()->tid, ce - &cache_entries[0]);
+  thread_current ()->num = names[2];
+  thread_current ()->snum = ce - &cache_entries[0];
+  thread_current ()->slock = &ce->rw_lock.lock;
   rw_lock_promote (&ce->rw_lock);
   struct list *list = &thread_current ()->locked_sectors;
   list_push_back (list, &ce->locked_elem); 
@@ -159,6 +203,7 @@ cache_sector_unlock (unsigned sector)
 {
   struct cache_entry *ce;
   ASSERT (ce = cache_get_current_locked_entry (sector));
+  //printf ("%u unlocks %u\n", thread_current ()->tid, ce - &cache_entries[0]);
   list_remove (&ce->locked_elem);
   rw_lock_release_w (&ce->rw_lock);
 }
@@ -166,14 +211,19 @@ cache_sector_unlock (unsigned sector)
 /* Adds a dirty cache_entry for SECTOR, as a blank sector. Used
    when allocating sectors to a file. The entry is marked dirty. */
 void
-cache_sector_add (unsigned sector)
+cache_sector_add (unsigned sector, unsigned pri)
 {
   struct cache_entry *ce = cache_get_entry (sector);
-  ce->accessed = true;
+  ce->accessed = pri;
   ce->dirty = true;
   memset (&ce->data[0], 0, BLOCK_SECTOR_SIZE);
   if (!rw_lock_held_by_current_thread_w (&ce->rw_lock))
+  {  
+    thread_current ()->num = names[3];
+    thread_current ()->snum = ce - &cache_entries[0];
+    thread_current ()->slock = &ce->rw_lock.lock;
     rw_lock_release_r (&ce->rw_lock);
+  }
 }
 
 /* Schedules an asynchronous fetch of block sector SECTOR and returns
@@ -206,6 +256,60 @@ void
 cache_sector_remove (unsigned sector)
 {
   cache_sector_cr (sector, true);
+}
+
+bool
+cache_sector_read_external (unsigned sector, void *buf, unsigned size)
+{
+  ASSERT (size % BLOCK_SECTOR_SIZE == 0);
+  struct cache_entry_ext *ce = malloc (sizeof (struct cache_entry_ext));
+  if (ce == NULL)
+    return false;
+  ce->num_sectors = size / BLOCK_SECTOR_SIZE;
+  ce->data = buf;
+  ce->dirty = false;
+  for (unsigned i = 0; i < ce->num_sectors; i++)
+    block_read (fs_device, sector + i, buf + i * BLOCK_SECTOR_SIZE);
+  list_push_back (&list_ext, &ce->ext_elem);
+  return true;
+}
+
+void
+cache_sector_free_external (unsigned sector)
+{
+  bool found;
+  struct list_elem *e;
+  struct cache_entry_ext *ce;
+  for (e = list_begin (&list_ext); e != list_end (&list_ext); 
+       e = list_next (e))
+    {
+      ce = list_entry (e, struct cache_entry_ext, ext_elem);
+      if (ce->sector = sector)
+        {
+          found = true;
+          break;
+        }
+    }
+  ASSERT (found);
+  if (ce->dirty)
+    for (unsigned i = 0; i < ce->num_sectors; i++)
+      block_write (fs_device, sector + i, ce->data + i * BLOCK_SECTOR_SIZE);
+  list_remove (&ce->ext_elem);
+  free (ce);
+}
+
+void
+cache_sector_dirty_external (unsigned sector)
+{
+  struct list_elem *e;
+  struct cache_entry_ext *ce;
+  for (e = list_begin (&list_ext); e != list_end (&list_ext); 
+       e = list_next (e))
+    {
+      ce = list_entry (e, struct cache_entry_ext, ext_elem);
+      if (ce->sector = sector)
+        ce->dirty = true;
+    }
 }
 
 /* Returns a pointer to the cache_entry assigned to SECTOR, if present.
@@ -260,6 +364,9 @@ cache_evict (void)
     {
       hash_delete (&cache_closed_hash, e);
       ce = hash_entry (e, struct cache_entry, elem);
+      thread_current ()->num = names[4];
+      thread_current ()->snum = ce - &cache_entries[0];
+      thread_current ()->slock = &ce->rw_lock.lock;
       rw_lock_acquire_w (&ce->rw_lock);
       return ce;
     } 
@@ -274,9 +381,9 @@ cache_evict (void)
           rw_lock_try_acquire_w (&ce->rw_lock))
         {
           /* Only necessary to check that the thread is safe to evict. */
-          if (ce->accessed)
+          if (ce->accessed > 0)
             {
-              ce->accessed = false;
+              ce->accessed--;
               rw_lock_release_w (&ce->rw_lock);
             }
           else
@@ -301,10 +408,15 @@ cache_get_entry (unsigned sector)
     return ce;
 
   /* Check: Sector is already present in the cache, and not closed. */ 
+  thread_current ()->num = names[5];
+  thread_current ()->slock = &cache_lock;
   lock_acquire (&cache_lock);
   ce = cache_lookup (sector, false);
   if (ce != NULL)
     {
+      thread_current ()->num = names[6];
+      thread_current ()->snum = ce - &cache_entries[0];
+      thread_current ()->slock = &ce->rw_lock.lock;
       rw_lock_acquire_r (&ce->rw_lock);
       lock_release (&cache_lock);
       return ce;
@@ -316,6 +428,9 @@ cache_get_entry (unsigned sector)
     {
       hash_delete (&cache_closed_hash, &ce->elem);
       hash_insert (&cache_hash, &ce->elem);
+      thread_current ()->num = names[7];
+      thread_current ()->snum = ce - &cache_entries[0];
+      thread_current ()->slock = &ce->rw_lock.lock;
       rw_lock_acquire_r (&ce->rw_lock);
       lock_release (&cache_lock);
       return ce;
@@ -340,6 +455,9 @@ cache_get_entry (unsigned sector)
   if (write_back)
     block_write (fs_device, old_sector, &ce->data);
   block_read (fs_device, sector, &ce->data); 
+  thread_current ()->num = names[8]; 
+  thread_current ()->snum = ce - &cache_entries[0];
+  thread_current ()->slock = &ce->rw_lock.lock;
   rw_lock_demote (&ce->rw_lock);
   return ce;
 }
@@ -353,11 +471,16 @@ cache_fetch_loop (void * aux UNUSED)
 {
   while (true)
     {
+      thread_current ()->num = names[13];
+      thread_current ()->slock = NULL;
       sema_down (&cache_fetch_sem);
       struct list_elem *e = list_pop_front (&cache_fetch_list);
       struct fetch_struct *fs = list_entry (e, struct fetch_struct, elem);
       struct cache_entry *ce = cache_get_entry (fs->sector);
       free (fs);
+      thread_current ()->num = names[9];
+      thread_current ()->snum = ce - &cache_entries[0];
+      thread_current ()->slock = &ce->rw_lock.lock;
       rw_lock_release_r (&ce->rw_lock);
     }
 }
@@ -367,18 +490,38 @@ cache_fetch_loop (void * aux UNUSED)
 static void
 cache_flush (void)
 {
+  struct list_elem *e;
+  for (e = list_begin (&list_ext); e != list_end (&list_ext); 
+       e = list_next (e))
+    {
+      struct cache_entry_ext *ce = list_entry (e, struct cache_entry_ext, 
+                                               ext_elem);
+      if (ce->dirty)
+        {
+          for (unsigned i = 0; i < ce->num_sectors; i++)
+            block_write (fs_device, ce->sector + i, 
+                         ce->data + i * BLOCK_SECTOR_SIZE);
+        }
+    }
+
   for (unsigned i = 0; i < NUM_CACHE_SECTORS; i++)
     {
       struct cache_entry *ce = &cache_entries[i];
       /* Read lock is sufficient to ensure an eviction is not
          attempted. This prevents reading, writing, and locked sectors
          from stalling the loop. */
+      thread_current ()->num = names[10];
+      thread_current ()->snum = ce - &cache_entries[0];
+      thread_current ()->slock = &ce->rw_lock.lock;
       rw_lock_acquire_r (&ce->rw_lock);
       if (ce->dirty)
         {
           block_write (fs_device, ce->sector, &ce->data);
           ce->dirty = false;
         }
+      thread_current ()->num = names[11];
+      thread_current ()->snum = ce - &cache_entries[0];
+      thread_current ()->slock = &ce->rw_lock.lock;
       rw_lock_release_r (&ce->rw_lock);
     }
 }
@@ -399,6 +542,8 @@ cache_flush_loop (void *aux UNUSED)
 static void
 cache_sector_cr (unsigned sector, bool deleted)
 {
+  thread_current ()->num = names[12];
+  thread_current ()->slock = &cache_lock;
   lock_acquire (&cache_lock);
   struct cache_entry *ce = cache_lookup (sector, false);
   if (ce != NULL)

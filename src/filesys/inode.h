@@ -12,7 +12,6 @@ void inode_init (void);
 bool inode_assign_inumber (inumber_t *);
 void inode_release_inumber (inumber_t);
 bool inode_create (inumber_t, off_t);
-bool inode_create_seq (unsigned, unsigned *, unsigned, unsigned);
 struct inode *inode_open (inumber_t);
 struct inode *inode_reopen (struct inode *);
 inumber_t inode_get_inumber (const struct inode *);

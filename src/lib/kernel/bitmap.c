@@ -109,6 +109,18 @@ bitmap_create_in_buf (size_t bit_cnt, void *block, size_t block_size UNUSED)
   return b;
 }
 
+struct bitmap *
+bitmap_open_in_buf (size_t bit_cnt, void *block, size_t block_size UNUSED)
+{
+  struct bitmap *b = block;
+  
+  ASSERT (block_size >= bitmap_buf_size (bit_cnt));
+
+  b->bit_cnt = bit_cnt;
+  b->bits = (elem_type *) (b + 1);
+  return b;
+}
+
 /* Returns the number of bytes required to accomodate a bitmap
    with BIT_CNT bits (for use with bitmap_create_in_buf()). */
 size_t
