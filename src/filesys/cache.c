@@ -15,6 +15,8 @@
 struct hash cache_closed_hash;
 struct hash cache_hash;
 struct list list_ext;
+struct lock evict_lock;
+
 
 /* Used for hash searches without allocating an entire
    cache_entry. Must have same offset between SECTOR and
@@ -105,6 +107,7 @@ cache_init (void)
     }
 
   lock_init (&cache_lock);
+  lock_init (&evict_lock);
   list_init (&cache_fetch_list);
   list_init (&list_ext);
   sema_init (&cache_fetch_sem, 0);
@@ -451,10 +454,12 @@ cache_get_entry (unsigned sector)
   ce->sector = sector;
   ce->dirty = false;
   hash_insert (&cache_hash, &ce->elem);
+  lock_acquire (&evict_lock);
   lock_release (&cache_lock);
   if (write_back)
     block_write (fs_device, old_sector, &ce->data);
   block_read (fs_device, sector, &ce->data); 
+  lock_release (&evict_lock);
   thread_current ()->num = names[8]; 
   thread_current ()->snum = ce - &cache_entries[0];
   thread_current ()->slock = &ce->rw_lock.lock;
