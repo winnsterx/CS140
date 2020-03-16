@@ -48,22 +48,22 @@ filesys_done (void)
 bool
 filesys_create (const char *name, off_t initial_size) 
 {
-  printf ("In filesys_create");
+  printf ("In filesys_create\n");
   /* 0 is reserved for the free map. */
   inumber_t inumber = 0;
   //block_sector_t inode_sector = 0;
   if (name == NULL || strlen (name) == 0) 
     return false;
-  char *file = dir_file (name);
-  char *path = dir_path (name); /* NEED to free PATH - malloc-ed */
-  if (file == NULL || path == NULL) 
-    return false;
-  struct dir *dir = dir_fetch (path);
-
+ // char *file = dir_file (name);
+ // char *path = dir_path (name); /* NEED to free PATH - malloc-ed */
+ // if (file == NULL || path == NULL) 
+   // return false;
+  //struct dir *dir = dir_fetch (path);
+  struct dir *dir = dir_open_root ();
   bool success = (dir != NULL
                   && inode_assign_inumber (&inumber)
                   && inode_create (inumber, initial_size)
-                  && dir_add (dir, file, inumber));
+                  && dir_add (dir, name, inumber));
   if (!success && inumber != 0) 
     inode_release_inumber (inumber);
   dir_close (dir);
@@ -81,15 +81,18 @@ filesys_open (const char *name)
 {
   //struct dir *dir = dir_open_root ();
   printf ("In filesys_open \n");
+  printf ("NAME: %s\n", name);
   if (name == NULL || strlen (name) == 0) 
     return false;
   char *file = dir_file (name);
   char *path = dir_path (name); /* NEED to free PATH - malloc-ed */
-  if (file == NULL || path == NULL) 
+ 
+  if (file == NULL && path == NULL) 
     return false;
   struct dir *dir = dir_fetch (path);
-
-  struct inode *inode = NULL;
+  if (dir == NULL)
+    printf ("BROH\n");
+  struct inode *inode;
   
   if (dir != NULL)
     dir_lookup (dir, file, &inode);

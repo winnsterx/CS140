@@ -108,7 +108,11 @@ print_stacktrace(struct thread *t, void *aux UNUSED)
 
   printf (" %p", retaddr);
   for (; (uintptr_t) frame >= 0x1000 && frame[0] != NULL; frame = frame[0])
+  {
+    if (!is_kernel_vaddr (frame[1]))
+      break;
     printf (" %p", frame[1]);
+   }
   printf (".\n");
 }
 

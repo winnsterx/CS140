@@ -72,7 +72,7 @@ static void kernel_thread (thread_func *, void *aux);
 static void idle (void *aux UNUSED);
 static struct thread *running_thread (void);
 static struct thread *next_thread_to_run (void);
-static void init_thread (struct thread *, const char *name, int priority, struct dir *cwd);
+static void init_thread (struct thread *, const char *name, int priority);
 static bool is_thread (struct thread *) UNUSED;
 static void *alloc_frame (struct thread *, size_t size);
 static void schedule (void);
@@ -118,7 +118,7 @@ thread_init (void)
   /* Set up a thread structure for the running thread. */
   ready_queues_size = 0;
   initial_thread = running_thread ();
-  init_thread (initial_thread, "main", PRI_DEFAULT, NULL);
+  init_thread (initial_thread, "main", PRI_DEFAULT);
   initial_thread->status = THREAD_RUNNING;
   initial_thread->tid = allocate_tid ();
   initial_thread->nice = 0;
@@ -135,7 +135,7 @@ thread_start (void)
   /* Create the idle thread. */
   struct semaphore idle_started;
   sema_init (&idle_started, 0);
-  thread_create ("idle", PRI_MIN, NULL, idle, &idle_started);
+  thread_create ("idle", PRI_MIN, idle, &idle_started);
 
   /* Start preemptive thread scheduling. */
   intr_enable ();
@@ -210,7 +210,7 @@ thread_print_stats (void)
    PRIORITY, but no actual priority scheduling is implemented.
    Priority scheduling is the goal of Problem 1-3. */
 tid_t
-thread_create (const char *name, int priority, struct dir *cwd,
+thread_create (const char *name, int priority,
                thread_func *function, void *aux) 
 {
   struct thread *t;
@@ -228,7 +228,7 @@ thread_create (const char *name, int priority, struct dir *cwd,
 
   /* Initialize thread. */
   init_thread (t, name, thread_mlfqs ? thread_current ()->priority  :  
-                                       priority, cwd);
+                                       priority);
   tid = t->tid = allocate_tid ();
 
   if (thread_mlfqs)
@@ -530,7 +530,7 @@ is_thread (struct thread *t)
 /* Does basic initialization of T as a blocked thread named
    NAME. */
 static void
-init_thread (struct thread *t, const char *name, int priority, struct dir *cwd)
+init_thread (struct thread *t, const char *name, int priority)
 {
   enum intr_level old_level;
 
@@ -551,11 +551,7 @@ init_thread (struct thread *t, const char *name, int priority, struct dir *cwd)
   t->exec_file = NULL;
 #endif
 
-#ifdef FILESYS 
-  if (cwd == NULL)
-    cwd = dir_open_root ();
-  t->cwd = cwd;
-#endif
+  t->cwd = NULL;
 
   old_level = intr_disable ();
   list_push_back (&all_list, &t->allelem);

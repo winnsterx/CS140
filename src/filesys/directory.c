@@ -38,7 +38,8 @@ dir_create (block_sector_t sector, block_sector_t parent)
   if (dir == NULL)
     return false;
   
-  success = dir_add (dir, ".", sector) & dir_add (dir, "..", parent);
+  success = dir_add (dir, ".", sector) && 
+            dir_add (dir, "..", parent);
   dir_close (dir);
   return success;
 }
@@ -54,6 +55,7 @@ dir_open (struct inode *inode)
     {
       dir->inode = inode;
       dir->pos = 0;
+      printf ("FUCK\n");
       return dir;
     }
   else
@@ -129,6 +131,65 @@ lookup (const struct dir *dir, const char *name,
   return false;
 }
 
+
+/* Deletes a chain of the first file found in dir. Assumes that all of these
+   files are empty directories. */
+/*static void
+dir_remove_empty_chain (struct dir *dir)
+{
+  inumber_t first_inumber = dir->inode->inumber;
+  ASSERT (first_inumber != ROOT_DIR_INUMBER);
+  struct dir_entry e;
+  size_t ofs;
+  while (dir != NULL)
+    {
+      ASSERT (dir != NULL);
+      ASSERT (name != NULL);
+      bool first_found = false;
+      for (ofs = 0; inode_read_at (dir->inode, &e, sizeof e, ofs) == sizeof e;
+           ofs += sizeof e) 
+        {
+  
+          if (e.in_use && strcmp (name, ".") && strcmp (name, ".."))
+            {*/
+              /* Not a chain of empty directories */
+              /*if (first_found)
+                {
+                  dir_close (dir);
+                  return false;
+                }
+              
+              first_found = true;
+              dir = dir_open (inode_open (e.inumber));
+              if (dir == NULL)
+                return false;
+            }
+          
+        }
+      dir_close (dir);*/
+      /* Empty directory. */
+      /*if (!first_found)
+        break;
+     }
+
+  struct inode *inode;
+  while (dir != NULL && dir->inode->inumber != first_inumber)
+    {
+      bool success = dir_lookup (dir, "..", &inode);
+      ASSERT (success);
+      inode_remove (dir->inode);
+      dir_close (dir);
+      dir = dir_open (inode);
+    }
+
+  if (dir == NULL)
+    return false;
+  
+  inode_remove (dir->inode);
+  dir_close (dir);
+  return true;
+}*/
+
 /* Searches DIR for a file with the given NAME
    and returns true if one exists, false otherwise.
    On success, sets *INODE to an inode for the file, otherwise to
@@ -197,6 +258,9 @@ dir_add (struct dir *dir, const char *name, inumber_t inumber)
   return success;
 }
 
+
+
+
 /* Removes any entry for NAME in DIR.
    Returns true if successful, false on failure,
    which occurs only if there is no file with the given NAME. */
@@ -219,7 +283,7 @@ dir_remove (struct dir *dir, const char *name)
   inode = inode_open (e.inumber);
   if (inode == NULL)
     goto done;
-
+   
   /* Erase directory entry. */
   e.in_use = false;
   if (inode_write_at (dir->inode, &e, sizeof e, ofs) != sizeof e) 
@@ -288,9 +352,40 @@ dir_file (const char *name)
   return begin;
 }
 
+
+/*static bool
+struct dir * dir_create_child (struct dir *cur_dir)
+{
+  inumber_t inumber;
+  struct dir *child;
+  bool success = (inode_assign_inumber (&inumber)
+    && dir_add (cur_dir, next, inumber)
+    && dir_create (inumber, dir->inode->inumber)
+    && child = dir_open (inode_open (inumber)));
+          
+  if (inumber == ROOT_DIR_INUMBER)
+    first_inumber = inumber;
+ 
+  if (success)
+    return child;
+ 
+  if (child != NULL)
+    {
+      inode_remove (child->inode);
+      dir_close (child);
+    }
+  if (inumber != ROOT_DIR_INUMBER)
+    inode_release (inumber);
+
+  dir_remove (cur_dir, next);
+  dir_remove_empty_chain (child);
+  return NULL;
+}*/
+
+
 /* Finds the directory NAME */ 
 struct dir *
-dir_fetch (char *name) 
+dir_fetch (char *name/*, bool create*/) 
 {
   struct dir *cur_dir; 
   char *saved; 
@@ -298,33 +393,56 @@ dir_fetch (char *name)
 
   /* Directory path is NULL */
   if (name == NULL) 
-    return NULL;
+    return dir_open_root ();
+
+  struct thread *t = thread_current ();
 
   /* Absolute path */  
   if (name[0] == '/') {
     cur_dir = dir_open_root ();
   } else {
   /* Relative path */
-    cur_dir = dir_reopen (thread_current ()->cwd);
+    if (t->cwd == NULL)
+      t->cwd = dir_open_root ();
+    cur_dir = dir_reopen (t->cwd);
   }
+
+  /* Reserved inumber, so we can use it as marker that
+     a new directory was or was not created. */
+  inumber_t first_inumber = ROOT_DIR_INUMBER;
   
   for (next = strtok_r (name, "/", &saved); next != NULL;
        next = strtok_r (NULL, "/", &saved))
   {
     struct inode *inode = NULL;
     if (dir_lookup (cur_dir, next, &inode))
-    {
-      /* next directory is found in cur_dir */
-      dir_close (cur_dir);
-      cur_dir = dir_open (inode);
-    } else {
-      dir_close (cur_dir);
-      free (name);
-      return NULL;
-    }
+      {
+        /* next directory is found in cur_dir */
+        dir_close (cur_dir);
+        cur_dir = dir_open (inode);
+        if (cur_dir == NULL)
+          return NULL;
+      }
+    /*else if (create) 
+      {
+        struct dir *child = dir_create_child (cur_dir);
+        if (child == NULL)
+          {
+            dir_remove_empty_chain (dir_open (inode_open (first_created)));
+            return NULL;
+          }
+        cur_dir = child;
+      }*/
+    else
+      {
+        dir_close (cur_dir);
+        return NULL;
+      }
+  
   }
 
-  free (name); /* Frees the path malloc'ed */
+  //free (name); /* Frees the path malloc'ed */
   return cur_dir; 
 }
 
+  
