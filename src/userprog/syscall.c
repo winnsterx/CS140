@@ -411,7 +411,7 @@ mkdir (const char *name)
 static bool
 readdir (int fd, char *name)
 {
-  if (!validate_range (name, READDIR_MAX_LEN + 1))
+  if (!validate_range ((uint8_t *) name, READDIR_MAX_LEN + 1))
     thread_exit ();
   
   struct fd_struct *fd_struct = find_fd_struct (fd);

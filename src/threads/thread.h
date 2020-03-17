@@ -108,12 +108,6 @@ struct thread
     struct dir *cwd;			/* Current working directory. */
 #endif
 
-
-
-//////////////////////////////////DENBEUG
-    struct lock *debug_lock;
-    struct list_elem debug;
-    struct list debug_lock_list;
     /* Owned by filesys/cache.c. */
     void *locked_ce;             /* Locked cache sector. */
 

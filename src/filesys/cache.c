@@ -20,7 +20,6 @@ struct hash cache_hash;
 struct list list_ext;
 struct lock evict_lock;
 
-
 /* Used for hash searches without allocating an entire
    cache_entry. Must have same offset between SECTOR and
    ELEM as a cache_entry. */
@@ -30,6 +29,7 @@ struct cache_entry_stub
     struct hash_elem elem;
   };
 
+/* Info about cache sectors, and the data. */
 struct cache_entry
   {
     block_sector_t sector;
@@ -41,6 +41,8 @@ struct cache_entry
     uint8_t data[BLOCK_SECTOR_SIZE];
   };
 
+/* Used for external management
+   of cached memory. Used for the free-map. */
 struct cache_entry_ext
   {
     block_sector_t sector;
@@ -50,6 +52,7 @@ struct cache_entry_ext
     void *data;
   };
 
+/* Tells the fetch thread what to fetch. */
 struct fetch_struct
   {
     block_sector_t sector;
@@ -64,7 +67,6 @@ static struct list cache_fetch_list;
 static unsigned cur_index;
 static bool done;
 
-static struct cache_entry *cache_get_current_locked_entry (unsigned);
 static struct cache_entry *cache_lookup (unsigned, bool);
 static void cache_flush (void);
 static void cache_flush_loop (void *);
@@ -224,6 +226,8 @@ cache_sector_remove (unsigned sector)
   cache_sector_cr (sector, true);
 }
 
+/* Allows an external buffer to be written to disk by the cache, when
+   marked dirty. */
 bool
 cache_sector_read_external (unsigned sector, void *buf, unsigned size)
 {
@@ -231,6 +235,7 @@ cache_sector_read_external (unsigned sector, void *buf, unsigned size)
   struct cache_entry_ext *ce = malloc (sizeof (struct cache_entry_ext));
   if (ce == NULL)
     return false;
+  ce->sector = sector;
   ce->num_sectors = size / BLOCK_SECTOR_SIZE;
   ce->data = buf;
   ce->dirty = false;
@@ -240,30 +245,33 @@ cache_sector_read_external (unsigned sector, void *buf, unsigned size)
   return true;
 }
 
+/* Removes a buffer from cahce management. Must be freed by the caller. */
 void
 cache_sector_free_external (unsigned sector)
 {
-  bool found;
   struct list_elem *e;
   struct cache_entry_ext *ce;
   for (e = list_begin (&list_ext); e != list_end (&list_ext); 
        e = list_next (e))
     {
       ce = list_entry (e, struct cache_entry_ext, ext_elem);
-      if (ce->sector = sector)
+      if (ce->sector == sector)
         {
-          found = true;
-          break;
+          if (ce->dirty)
+            {
+              for (unsigned i = 0; i < ce->num_sectors; i++)
+                block_write (fs_device, sector + i, ce->data + 
+                i * BLOCK_SECTOR_SIZE);
+            }  
+          list_remove (&ce->ext_elem);
+          free (ce);
+          return;
         }
     }
-  ASSERT (found);
-  if (ce->dirty)
-    for (unsigned i = 0; i < ce->num_sectors; i++)
-      block_write (fs_device, sector + i, ce->data + i * BLOCK_SECTOR_SIZE);
-  list_remove (&ce->ext_elem);
-  free (ce);
 }
 
+/* Marks an externally managed block of sectors starting at SECTOR
+   as dirty. */
 void
 cache_sector_dirty_external (unsigned sector)
 {
@@ -273,10 +281,13 @@ cache_sector_dirty_external (unsigned sector)
        e = list_next (e))
     {
       ce = list_entry (e, struct cache_entry_ext, ext_elem);
-      if (ce->sector = sector)
+      if (ce->sector == sector)
+       {
         ce->dirty = true;
+   }
     }
 }
+
 
 /* Returns a pointer to the cache_entry assigned to SECTOR, if present.
    Otherwise returns NULL. Checks amongst cache_entries cointaing closed

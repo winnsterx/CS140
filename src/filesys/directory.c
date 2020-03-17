@@ -8,7 +8,6 @@
 #include "threads/thread.h"
 
 static char *current_str = ".";
-static char *parent_str = "..";
 
 /* A directory. */
 struct dir 
@@ -161,9 +160,9 @@ dir_is_empty (struct dir *dir)
 /* Retruns true if the inode tied to a directory has been
    removed. */
 static bool
-dir_is_removed (struct dir *dir)
+dir_is_removed (const struct dir *dir)
 {
-  if (inode_is_removed)
+  ASSERT (dir != NULL);
   return inode_is_removed (dir->inode);
 }
 
@@ -342,7 +341,7 @@ dir_file (const char *name)
 
 /* Finds the directory NAME */ 
 struct dir *
-dir_fetch (char *name, char **file) 
+dir_fetch (const char *name, char **file) 
 {
   unsigned len;
   if (name == NULL || (len = strlen (name)) == 0)
@@ -377,7 +376,7 @@ dir_fetch (char *name, char **file)
         return NULL; 
     }
   else
-    path_end = name + strlen (name);
+    path_end = (char *) name + strlen (name);
 
   len = path_end - name;
   char *path = malloc (len + 1);

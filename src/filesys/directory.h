@@ -31,6 +31,6 @@ bool dir_readdir (struct dir *, char name[NAME_MAX + 1]);
 /* Path Traversal */
 char *dir_path (const char *name);
 char *dir_file (const char *name);
-struct dir *dir_fetch (char *name, char **file);
+struct dir *dir_fetch (const char *name, char **file);
 
 #endif /* filesys/directory.h */

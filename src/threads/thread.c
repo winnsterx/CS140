@@ -337,6 +337,9 @@ thread_exit (void)
 {
   ASSERT (!intr_context ());
 
+  if (thread_current ()->cwd != NULL)
+    dir_close (thread_current ()->cwd);
+
 #ifdef USERPROG
   process_exit ();
 #endif

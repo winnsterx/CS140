@@ -7,8 +7,7 @@
 /* Size of the inode table in sectors. */
 #define INODE_TABLE_SECTORS 100
 
-/* inumbers of system file inodes. */
-//#define FREE_MAP_INUMBER 0
+/* inumbers of root directory inodes. */
 #define ROOT_DIR_INUMBER 0
 
 #define PRI_INODE 3

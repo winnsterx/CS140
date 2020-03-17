@@ -9,13 +9,13 @@
 #include "threads/malloc.h"
 #include "threads/synch.h"
 
-static struct file *free_map_file;   /* Free map file. */
 static struct bitmap *free_map;      /* Free map, one bit per sector. */
 static void *buf;
 static size_t bit_cnt;
 static size_t buf_size;
 size_t num_sectors;
 static struct lock DEBUG_FREEMAP_LOCK;
+
 /* Initializes the free map. */
 void
 free_map_init (void) 
@@ -26,7 +26,6 @@ free_map_init (void)
   num_sectors = DIV_ROUND_UP (bitmap_buf_size (bit_cnt),
                                        BLOCK_SECTOR_SIZE);
 }
-
 
 /* Allocates CNT consecutive sectors from the free map and stores
    the first into *SECTORP.

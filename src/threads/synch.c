@@ -68,10 +68,8 @@ void
 sema_down (struct semaphore *sema) 
 {
   enum intr_level old_level;
-  static bool deadlock;
   ASSERT (sema != NULL);
   ASSERT (!intr_context ());
-  unsigned tid = thread_current ()->tid;
   old_level = intr_disable ();
   while (sema->value == 0) 
     {
