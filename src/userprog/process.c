@@ -23,6 +23,7 @@
 struct process_args
   {
     char *command;
+    struct dir *cwd;
     struct process_state *proc_state;
     struct semaphore process_loaded_sem;
     bool success;
@@ -70,10 +71,12 @@ process_execute (const char *command)
   struct process_args process_args;
   process_args.command = cmd_copy;
   process_args.proc_state = proc_state;
+  process_args.cwd = thread_current ()->cwd;
   sema_init (&process_args.process_loaded_sem, 0);
 
   /* Create a new thread to execute FILE_NAME. */
-  tid = thread_create (file_name, PRI_DEFAULT, start_process, &process_args);
+  tid = thread_create (file_name, PRI_DEFAULT,
+		       start_process, &process_args);
 
   if (tid == TID_ERROR)
     {
@@ -117,12 +120,17 @@ start_process (void *process_args)
   bool success;
 
   /* Initialize interrupt frame and load executable. */
+  struct thread *t = thread_current ();
   memset (&if_, 0, sizeof if_);
   if_.gs = if_.fs = if_.es = if_.ds = if_.ss = SEL_UDSEG;
   if_.cs = SEL_UCSEG;
   if_.eflags = FLAG_IF | FLAG_MBS;
   success = load (args->command, &if_.eip, &if_.esp);
-  thread_current ()->proc_state = args->proc_state;
+  t->proc_state = args->proc_state;
+  if (args->cwd != NULL)
+    t->cwd = dir_reopen (args->cwd);
+  else
+    t->cwd = NULL;
   args->success = success;
   args->proc_state->tid = thread_current ()->tid;
   palloc_free_page (args->command);

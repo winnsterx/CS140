@@ -15,6 +15,7 @@
 #ifdef USERPROG
 #include "userprog/process.h"
 #endif
+#include "filesys/directory.h"
 
 /* Random value for struct thread's `magic' member.
    Used to detect stack overflow.  See the big comment at the top
@@ -103,11 +104,6 @@ static bool ready_is_empty (void);
 void
 thread_init (void) 
 {
-
-// DBUGGGGGGGGGG
-  list_init (&debug_list);
-
-
   ASSERT (intr_get_level () == INTR_OFF);
 
   lock_init (&tid_lock);
@@ -546,13 +542,15 @@ init_thread (struct thread *t, const char *name, int priority)
   t->stack = (uint8_t *) t + PGSIZE;
   t->priority = priority;
   t->magic = THREAD_MAGIC; 
-  list_init (&t->locked_sectors);
 
 #ifdef USERPROG
   list_init (&t->child_list);
   list_init (&t->fd_list);
   t->exec_file = NULL;
 #endif
+
+  t->cwd = NULL;
+  t->locked_ce = NULL;
 
   old_level = intr_disable ();
   list_push_back (&all_list, &t->allelem);

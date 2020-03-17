@@ -71,35 +71,14 @@ sema_down (struct semaphore *sema)
   static bool deadlock;
   ASSERT (sema != NULL);
   ASSERT (!intr_context ());
-
+  unsigned tid = thread_current ()->tid;
   old_level = intr_disable ();
-  if (!deadlock)
-    {
-      int count = 0;
-      struct list_elem *e;
-      for (e = list_begin (&debug_list); e != list_end (&debug_list); e = list_next (e))
-        {
-          //struct thread *t = list_entry (e, struct thread, debug);
-          //if (strcmp (t->name, "child-syn-rw") == 0)
-            count++;
-        }
-      if (count == 7)
-        {
-          deadlock = true;
-          //printf ("FUCK BITCH\n");
-
-          //debug_backtrace_all ();
-        }
-      list_push_back (&debug_list, &thread_current ()->debug);
-    }
   while (sema->value == 0) 
     {
       list_insert_ordered (&sema->waiters, &thread_current ()->elem,
        & priority_comp, NULL);
       thread_block ();
     }
-  if (!deadlock)
-    list_remove (&thread_current ()->debug);
   sema->value--;
   intr_set_level (old_level);
 }
@@ -233,7 +212,7 @@ lock_acquire (struct lock *lock)
   ASSERT (lock != NULL);
   ASSERT (!intr_context ());
   ASSERT (!lock_held_by_current_thread (lock));
-
+  
   sema_down (&lock->semaphore);
   lock->holder = thread_current ();
 }
@@ -285,6 +264,7 @@ lock_held_by_current_thread (const struct lock *lock)
   return lock->holder == thread_current ();
 }
 
+/* Initializes a readers writer lock. */
 void
 rw_lock_init (struct rw_lock *rw_lock)
 {
@@ -295,6 +275,7 @@ rw_lock_init (struct rw_lock *rw_lock)
   lock_init (&rw_lock->lock);
 }
 
+/* Acquires a read lock. */
 void
 rw_lock_acquire_r (struct rw_lock *rw_lock)
 {
@@ -305,9 +286,12 @@ rw_lock_acquire_r (struct rw_lock *rw_lock)
   lock_release (&rw_lock->lock);
 }
 
+/* Acquires a write lock, waiting for readers to release
+   their locks. */
 void
 rw_lock_acquire_w (struct rw_lock *rw_lock)
 {
+
   ASSERT (!rw_lock_held_by_current_thread_w (rw_lock));
   lock_acquire (&rw_lock->lock);
   rw_lock->counter_w++;
@@ -315,6 +299,8 @@ rw_lock_acquire_w (struct rw_lock *rw_lock)
     cond_wait (&rw_lock->cond_r, &rw_lock->lock);
 }
 
+/* Attempts to acquire a reading lock. Returns false
+  if a writer holds a lock. */
 bool
 rw_lock_try_acquire_r (struct rw_lock *rw_lock)
 {
@@ -330,7 +316,8 @@ rw_lock_try_acquire_r (struct rw_lock *rw_lock)
   return false;
 }
      
-
+/* Attempts to acquire a writer lock. Returns false
+   if readers are present. */
 bool
 rw_lock_try_acquire_w (struct rw_lock *rw_lock)
 {
@@ -350,7 +337,7 @@ rw_lock_try_acquire_w (struct rw_lock *rw_lock)
 
 /* Promotes the calling thread to owner of a write lock, all
    promotions supercede all attempts to acquire a write lock
-   through rw_lock_acquire_w (). Promotions */
+   through rw_lock_acquire_w (). */
 void
 rw_lock_promote (struct rw_lock *rw_lock)
 {
@@ -364,36 +351,36 @@ rw_lock_promote (struct rw_lock *rw_lock)
   rw_lock->counter_p--;
 }
   
-/* It cannot be checked that a thread calling this function
-   has acquired a read lock. Take care to ensure proper use. */
+/* Releases a reader lock. It cannot be checked that a thread 
+  calling this function has acquired a read lock. Take 
+  care to ensure proper use. */
 void
 rw_lock_release_r (struct rw_lock *rw_lock)
 {
-  // DEBUG
   bool succ = lock_try_acquire (&rw_lock->lock);
   while (!succ)
     {
-      //printf ("BUG\n");
      succ = lock_try_acquire (&rw_lock->lock);
     }
 
-  //lock_acquire (&rw_lock->lock);
   ASSERT (rw_lock->counter_r > 0);
   if (--rw_lock->counter_r == 0)
     cond_broadcast (&rw_lock->cond_r, &rw_lock->lock);
   lock_release (&rw_lock->lock);
 }
 
+/* Releases a writer lock. */
 void
 rw_lock_release_w (struct rw_lock *rw_lock)
 {
   ASSERT (rw_lock_held_by_current_thread_w (rw_lock));
   if (--rw_lock->counter_w == 0)
     cond_broadcast (&rw_lock->cond_w, &rw_lock->lock);
-  //printf ("num writers: %u\n", rw_lock->counter_w);
   lock_release (&rw_lock->lock);
 }
 
+/* Demotes a writer lock to a reading lock, without 
+   allowing other writers to wake first. */
 void 
 rw_lock_demote (struct rw_lock *rw_lock)
 {
@@ -403,15 +390,13 @@ rw_lock_demote (struct rw_lock *rw_lock)
   cond_broadcast (&rw_lock->cond_w, &rw_lock->lock);
   lock_release (&rw_lock->lock);
 }
-  
 
+/* Returns true if the current thread holds the writer lock. */
 bool
 rw_lock_held_by_current_thread_w (const struct rw_lock *rw_lock)
 {
   return lock_held_by_current_thread (&rw_lock->lock);
 }
-
-  
 
 /* One semaphore in a list. */
 struct semaphore_elem 

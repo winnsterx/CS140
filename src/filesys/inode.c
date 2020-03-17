@@ -1,6 +1,7 @@
 #include "filesys/inode.h"
 #include <list.h>
 #include <debug.h>
+#include <stdio.h>
 #include <round.h>
 #include <string.h>
 #include "filesys/cache.h"
@@ -8,9 +9,6 @@
 #include "filesys/free-map.h"
 #include "threads/malloc.h"
 #include "threads/synch.h"
-// DEBUG
-#include "threads/thread.h"
-
 
 
 #define SID_INDEX 5
@@ -21,13 +19,11 @@
 #define SID_LIMIT (DIRECT_LIMIT + (DID_INDEX - SID_INDEX) * NUM_PER_SECTOR)
 #define DID_LIMIT (SID_LIMIT + (MAX_INDEX - DID_INDEX) * \
                    NUM_PER_SECTOR * NUM_PER_SECTOR)
-// TO DO: MAYBE I CANT KEEP THE ARR FRO INODE DISK SINC EIT COUNTS AS METADATA.
-// IN THIS CASE, KEEP IT JUST ON DISK, MAKE INODE TABLE V HIGHPRIORITY FOR STAYING
-// IN CACHE
 
 /* On-disk inode. Must not be larger than BLOCK_SECTOR_SIZE. */
 struct inode_disk
   {
+    bool is_dir;
     bool in_use;                        /* Inode entry in use. */
     off_t length;                       /* File size in bytes. */
     unsigned arr[8];                    /* Direct, indirect and doubly
@@ -45,6 +41,7 @@ struct inode
     struct lock deny_write_lock;
     int deny_write_cnt;                 /* 0: writes ok, >0: deny writes. */
     struct lock data_lock;
+    struct lock dir_lock;
   };
 
 
@@ -65,8 +62,6 @@ static struct list open_inodes;
 static struct lock open_inodes_lock;
 
 static struct lock inumber_lock;
-
-
 
 /* Initializes the inode module. */
 void
@@ -116,7 +111,7 @@ inode_release_inumber (inumber_t inumber)
    Returns true if successful.
    Returns false if memory or disk allocation fails. */
 bool
-inode_create (inumber_t inumber, off_t length)
+inode_create (inumber_t inumber, off_t length, bool is_dir)
 {
   ASSERT (length >= 0);
 
@@ -124,9 +119,10 @@ inode_create (inumber_t inumber, off_t length)
   
   disk_inode.length = length;
   disk_inode.in_use = true;
+  disk_inode.is_dir = is_dir;
   memset (&disk_inode.arr, 0, sizeof (disk_inode.arr));
   inode_write_to_table (inumber, &disk_inode);
-  return true; //THIS CANT FAIL
+  return true;
 }
 
 
@@ -166,6 +162,8 @@ inode_open (inumber_t inumber)
   lock_init (&inode->open_lock);
   lock_init (&inode->deny_write_lock);
   lock_init (&inode->data_lock);
+  lock_init (&inode->dir_lock);
+
   /* Prevent a premature reopen. */
   lock_acquire (&inode->open_lock);
   lock_release (&open_inodes_lock);
@@ -176,6 +174,22 @@ inode_open (inumber_t inumber)
   inode->open_cnt = 1;
   lock_release (&inode->open_lock);
   return inode;
+}
+
+bool
+inode_lock_dir (struct inode *inode)
+{
+  if (lock_held_by_current_thread (&inode->dir_lock))
+    return true;
+  lock_acquire (&inode->dir_lock);
+  return false;
+}
+
+void
+inode_set_lock_dir (struct inode *inode, bool prev)
+{
+  if (!prev)
+    lock_release (&inode->dir_lock);
 }
 
 /* Reopens and returns INODE. */
@@ -196,6 +210,14 @@ inumber_t
 inode_get_inumber (const struct inode *inode)
 {
   return inode->inumber;
+}
+
+bool
+inode_is_dir (const struct inode *inode)
+{
+  struct inode_disk disk_inode;
+  inode_read_from_table (inode->inumber, &disk_inode);
+  return disk_inode.is_dir;
 }
 
 /* Closes INODE and writes it to disk.
@@ -238,6 +260,14 @@ inode_remove (struct inode *inode)
   inode->removed = true;
 }
 
+/* Returns whether an inode has been removed. */
+bool
+inode_is_removed (struct inode *inode)
+{
+  ASSERT (inode != NULL);
+  return inode->removed;
+}
+
 /* Reads SIZE bytes from INODE into BUFFER, starting at position OFFSET.
    Returns the number of bytes actually read, which may be less
    than SIZE if an error occurs or end of file is reached. */
@@ -274,7 +304,6 @@ inode_read_at (struct inode *inode, void *buffer_, off_t size, off_t offset)
   /* Read ahead. */
   /* Offset at start of next bock. */
   offset -= offset % BLOCK_SECTOR_SIZE;
-  // DONT NEED LOCK HERE IF STORE OF AN UNSIGNED IN MEMCPY IS ATOMIC
   struct inode_disk disk_inode;
   inode_read_from_table (inode->inumber, &disk_inode);
   if (offset < disk_inode.length)
@@ -282,7 +311,6 @@ inode_read_at (struct inode *inode, void *buffer_, off_t size, off_t offset)
       block_sector_t sector_idx = byte_to_sector (inode, offset);
       cache_sector_fetch_async (sector_idx);
     }
-
 
   return bytes_read;
 }
@@ -301,7 +329,6 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
 
   if (inode->deny_write_cnt)
     return 0;
-  
   while (size > 0) 
     {
       /* Offset within sector to write to. */
@@ -317,7 +344,6 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
       block_sector_t sector_idx = byte_to_sector (inode, offset);
       cache_sector_write (sector_idx, buffer + bytes_written,
                           chunk_size, sector_ofs, PRI_NORMAL);
-    
       lock_acquire (&inode->data_lock);
       struct inode_disk disk_inode;
       inode_read_from_table (inode->inumber, &disk_inode);
@@ -413,15 +439,11 @@ bytes_to_sectors (off_t size)
   return DIV_ROUND_UP (size, BLOCK_SECTOR_SIZE);
 }
 
-          
-
 static bool
 sector_fixup_arr (struct inode *inode, struct inode_disk *disk_inode,
                   size_t index, bool meta)
 {
   /* The free-map inode will never need to allocate a sector for itself. */
-  //if (inode->inumber == FREE_MAP_INUMBER)
-    //return true;
   lock_acquire (&inode->data_lock);
   inode_read_from_table (inode->inumber, disk_inode);
   if (disk_inode->arr[index] == 0)
@@ -440,8 +462,6 @@ sector_fixup_arr (struct inode *inode, struct inode_disk *disk_inode,
   return true;
 }
   
-
-
 /* Gets a sector number from an index sector FROM_SECTOR,
    at index INDEX. Allocates and writes back a sector number 
    if that index of FROM_SECTOR had not previously been allocated.
@@ -452,6 +472,7 @@ sector_fixup_disk (block_sector_t from_sector, block_sector_t *to_sector,
 {
   /* Slightly heavy-handed to lock the entire sector, but we need
      to prevent double allocations for the same index in a sector. */
+  bool add_sector = false;
   cache_sector_lock (from_sector);
   cache_sector_read (from_sector, to_sector, sizeof (unsigned), 
                      index * sizeof (unsigned), PRI_META);
@@ -464,11 +485,15 @@ sector_fixup_disk (block_sector_t from_sector, block_sector_t *to_sector,
           return false;
         }
       unsigned pri = meta ? PRI_META : PRI_NORMAL;
-      cache_sector_add (*to_sector, PRI_META);
+      /* When a sector is locked, no other sector can be accessed
+         by that thread. */
+      add_sector = true;
       cache_sector_write (from_sector, to_sector, sizeof (unsigned), 
                           index * sizeof (unsigned), pri);
     }
   cache_sector_unlock (from_sector);
+  if (add_sector)
+    cache_sector_add (*to_sector, PRI_META);
   return true;
 }
 
@@ -505,8 +530,6 @@ sector_fixup_depth (struct inode *inode, block_sector_t start_index,
     }
   return sector_to;
 }
-      
-// HOW YO FREE UNUSED PAGES ON RETURN?
 
 /* Returns the block device sector that contains byte offset POS
    within INODE. Allocates a sector if needed. Returns -1 if POS 
@@ -516,8 +539,6 @@ static block_sector_t
 byte_to_sector (struct inode *inode, off_t pos)
 {
   ASSERT (inode != NULL);
-  // NEED TO LOCK INDEX, to not want to block other accesses on IO
-   // fuck. What if different indeces need same block
   unsigned index = pos / BLOCK_SECTOR_SIZE;
   if (index < DIRECT_LIMIT)
     return sector_fixup_depth (inode, 0, 0, index, 0);

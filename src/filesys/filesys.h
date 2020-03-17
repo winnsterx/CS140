@@ -5,7 +5,7 @@
 #include "filesys/off_t.h"
 
 /* Size of the inode table in sectors. */
-#define INODE_TABLE_SECTORS 8
+#define INODE_TABLE_SECTORS 100
 
 /* inumbers of system file inodes. */
 //#define FREE_MAP_INUMBER 0

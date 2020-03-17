@@ -48,14 +48,14 @@ filesys_done (void)
 bool
 filesys_create (const char *name, off_t initial_size) 
 {
-  /* 0 is reserved for the free map. */
+  /* 0 is reserved for the root directory. */
   inumber_t inumber = 0;
-  struct dir *dir = dir_open_root ();
+  char *file_name;
+  struct dir *dir = dir_fetch (name, &file_name);
   bool success = (dir != NULL
                   && inode_assign_inumber (&inumber)
-                  && inode_create (inumber, initial_size)
-                  && dir_add (dir, name, inumber));
-  
+                  && inode_create (inumber, initial_size, false)
+                  && dir_add (dir, file_name, inumber));
   if (!success && inumber != 0) 
     inode_release_inumber (inumber);
   dir_close (dir);
@@ -70,13 +70,15 @@ filesys_create (const char *name, off_t initial_size)
 struct file *
 filesys_open (const char *name)
 {
-  struct dir *dir = dir_open_root ();
-  struct inode *inode = NULL;
-
-  if (dir != NULL)
-    dir_lookup (dir, name, &inode);
+  char *file_name;
+  struct dir *dir = dir_fetch (name, &file_name);
+  if (dir == NULL)
+    return NULL;
+  struct inode *inode;
+  bool success = dir_lookup (dir, file_name, &inode);
   dir_close (dir);
-  return file_open (inode);
+
+  return success ? file_open (inode) : NULL;
 }
 
 /* Deletes the file named NAME.
@@ -86,10 +88,12 @@ filesys_open (const char *name)
 bool
 filesys_remove (const char *name) 
 {
-  struct dir *dir = dir_open_root ();
-  bool success = dir != NULL && dir_remove (dir, name);
-  dir_close (dir); 
+  char *file_name;
+  struct dir *dir = dir_fetch (name, &file_name);
 
+  bool success = dir != NULL && 
+                 dir_remove (dir, file_name);
+  dir_close (dir); 
   return success;
 }
 
@@ -97,15 +101,13 @@ filesys_remove (const char *name)
 static void
 do_format (void)
 {
-  printf ("Formatting file system...");
   /* Clear the inode table. */
   
-  // TO MANY READS ARE HAPPENING, FIND OUT WHY
   for (unsigned i = 0; i < INODE_TABLE_SECTORS; i++)
     cache_sector_add (i, PRI_INODE);    
   
   free_map_create ();
-  if (!dir_create (ROOT_DIR_INUMBER, 16))
+  if (!dir_create (ROOT_DIR_INUMBER, ROOT_DIR_INUMBER))
     PANIC ("root directory creation failed");
   free_map_close ();
 }

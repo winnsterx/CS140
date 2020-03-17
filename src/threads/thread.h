@@ -6,14 +6,7 @@
 #include <list.h>
 #include <stdint.h>
 #include "threads/synch.h"
-
-
-
-
-// DEEEEEEBUGGGGGGG
-struct list debug_list;
-
-
+#include "filesys/directory.h"
 
 /* States in a thread's life cycle. */
 enum thread_status
@@ -105,12 +98,6 @@ struct thread
     /* Owned by synch.c. */
     int64_t blocked_until;              /* OS tick when thread should wake. */
    
-
-     /* DEBUGGGGG*/ char *num;
-      unsigned snum;
-     struct list_elem debug;
-     struct lock *slock;
-  
 #ifdef USERPROG
     /* Owned by userprog/process.c. */
     uint32_t *pagedir;                  /* Page directory. */
@@ -118,10 +105,17 @@ struct thread
     struct list child_list;             /* List of children's state structs. */
     struct list fd_list;                /* List of fd_structs. */
     struct file *exec_file;             /* Currently executing file. */
+    struct dir *cwd;			/* Current working directory. */
 #endif
 
+
+
+//////////////////////////////////DENBEUG
+    struct lock *debug_lock;
+    struct list_elem debug;
+    struct list debug_lock_list;
     /* Owned by filesys/cache.c. */
-    struct list locked_sectors;         /* Sectors locked by this thread. */
+    void *locked_ce;             /* Locked cache sector. */
 
     /* Shared between thread.c and synch.c. */
     struct list_elem elem;              /* List element. */
@@ -155,6 +149,7 @@ void thread_unblock (struct thread *);
 
 struct thread *thread_current (void);
 tid_t thread_tid (void);
+struct dir *thread_cwd (void);
 const char *thread_name (void);
 
 void thread_exit (void) NO_RETURN;
